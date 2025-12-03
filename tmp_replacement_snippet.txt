@@ -1,0 +1,45 @@
+    // --- 変数管理 ---
+    let photoEntries: Array<PhotoEntry | null> = [null, null, null];
+    let pageOffset = 0;
+    let totalCount = 0;
+    let isAnimating = false;
+    // BGM 用サウンドハンドル（XR セッション時に再生／停止）
+    let bgm: Sound | null = null;
+    let bgmReady = false; // BGM 作成完了フラグ
+    let xrActive = false; // XR セッション中フラグ
+    let bgmPlaying = false; // 再生状態フラグ
+
+    // BGM 再生/一時停止トグル
+    const toggleBgm = async () => {
+      if (!bgmReady || !bgm) {
+        console.log('toggleBgm: BGM not ready');
+        return;
+      }
+      try {
+        const audioEngine = (Engine as any).audioEngine;
+        if (audioEngine?.audioContext?.state === 'suspended') {
+          await audioEngine.audioContext.resume();
+          console.log('Audio context resumed by toggle');
+        }
+      } catch (e) {
+        console.warn('toggleBgm: failed to resume audio context', e);
+      }
+
+      if (bgmPlaying) {
+        try {
+          if (typeof bgm.pause === 'function') {
+            (bgm as any).pause();
+          } else {
+            bgm.stop();
+          }
+        } catch (e) { console.warn('toggleBgm: pause/stop failed', e); }
+        bgmPlaying = false;
+        console.log('BGM paused/stopped');
+      } else {
+        try {
+          bgm.play();
+          bgmPlaying = true;
+          console.log('BGM play triggered');
+        } catch (e) { console.warn('toggleBgm: play failed', e); }
+      }
+    };
