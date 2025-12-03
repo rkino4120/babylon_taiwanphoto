@@ -586,12 +586,19 @@ function App() {
       try {
         const apiKey = import.meta.env.VITE_MICROCMS_API_KEY;
         if (!apiKey) {
-            console.warn("API Key is missing");
+            console.error("API Key is missing in environment variables");
+            console.warn("Set VITE_MICROCMS_API_KEY in .env file or Netlify environment variables");
             return;
         }
 
-        // API Keyがある場合のみFetch
-        const url = `https://liangworks.microcms.io/api/v1/taiwanphoto?limit=3&offset=${offset}`;
+        // Netlify プロキシ経由でも直接でも動作するよう条件分岐
+        const isNetlify = typeof window !== 'undefined' && window.location.hostname !== 'localhost';
+        const url = isNetlify
+          ? `https://${window.location.host}/api/microcms/v1/taiwanphoto?limit=3&offset=${offset}`
+          : `https://liangworks.microcms.io/api/v1/taiwanphoto?limit=3&offset=${offset}`;
+        
+        console.log(`Loading photos from: ${url} (isNetlify: ${isNetlify})`);
+        
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒タイムアウト
 
@@ -602,8 +609,11 @@ function App() {
           });
           clearTimeout(timeoutId);
           
+          console.log(`API response status: ${res.status}`);
+          
           if (!res.ok) {
-            throw new Error(`API Error: ${res.status} ${res.statusText}`);
+            const errorText = await res.text().catch(() => 'No response text');
+            throw new Error(`API Error: ${res.status} ${res.statusText} - ${errorText}`);
           }
           
           if (scene.isDisposed) return;
@@ -620,17 +630,23 @@ function App() {
               hideEntry(i);
             }
           }
-          console.log(`Photos loaded: offset=${offset}, count=${items.length}`);
+          console.log(`Photos loaded successfully: offset=${offset}, count=${items.length}, total=${totalCount}`);
         } catch (fetchError) {
           clearTimeout(timeoutId);
           if (fetchError instanceof Error) {
             if (fetchError.name === 'AbortError') {
-              console.error('API request timeout (10s)');
+              console.error('API request timeout (10s) - Check network connectivity');
             } else {
               console.error('API fetch error:', fetchError.message);
+              console.error('Stack:', fetchError.stack);
             }
           } else {
             console.error('API fetch error:', fetchError);
+          }
+          // フォールバック: プロキシでダメなら直接試行
+          if (isNetlify && !url.includes('liangworks.microcms.io')) {
+            console.log('Retrying with direct API endpoint...');
+            return loadPhotos(offset);
           }
         }
       } catch (e) {
