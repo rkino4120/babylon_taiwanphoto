@@ -584,27 +584,16 @@ function App() {
     // --- データ取得 ---
     const loadPhotos = async (offset = 0) => {
       try {
-        const apiKey = import.meta.env.VITE_MICROCMS_API_KEY;
-        if (!apiKey) {
-            console.error("API Key is missing in environment variables");
-            console.warn("Set VITE_MICROCMS_API_KEY in .env file or Netlify environment variables");
-            return;
-        }
-
-        // Netlify プロキシ経由でも直接でも動作するよう条件分岐
-        const isNetlify = typeof window !== 'undefined' && window.location.hostname !== 'localhost';
-        const url = isNetlify
-          ? `https://${window.location.host}/api/microcms/v1/taiwanphoto?limit=3&offset=${offset}`
-          : `https://liangworks.microcms.io/api/v1/taiwanphoto?limit=3&offset=${offset}`;
+        // Netlify Functions経由でAPIをプロキシ
+        const url = `/.netlify/functions/microcms?limit=3&offset=${offset}`;
         
-        console.log(`Loading photos from: ${url} (isNetlify: ${isNetlify})`);
+        console.log(`Loading photos from: ${url}`);
         
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒タイムアウト
 
         try {
           const res = await fetch(url, {
-            headers: { 'X-MICROCMS-API-KEY': apiKey },
             signal: controller.signal,
           });
           clearTimeout(timeoutId);
@@ -642,11 +631,6 @@ function App() {
             }
           } else {
             console.error('API fetch error:', fetchError);
-          }
-          // フォールバック: プロキシでダメなら直接試行
-          if (isNetlify && !url.includes('liangworks.microcms.io')) {
-            console.log('Retrying with direct API endpoint...');
-            return loadPhotos(offset);
           }
         }
       } catch (e) {

@@ -1,21 +1,10 @@
 [build]
   command = "npm run build"
   publish = "dist"
-
-[[redirects]]
-  from = "/api/microcms/*"
-  to = "https://liangworks.microcms.io/api/:splat"
-  status = 200
-  force = true
+  functions = "netlify/functions"
 
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
-
-[context.production]
-  environment = { VITE_MICROCMS_API_KEY = "$MICROCMS_API_KEY" }
-
-[context.deploy-preview]
-  environment = { VITE_MICROCMS_API_KEY = "$MICROCMS_API_KEY" }
 
