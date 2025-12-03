@@ -584,21 +584,38 @@ function App() {
     // --- データ取得 ---
     const loadPhotos = async (offset = 0) => {
       try {
-        // Netlify Functions経由でAPIをプロキシ
-        const url = `/.netlify/functions/microcms?limit=3&offset=${offset}`;
+        const apiKey = import.meta.env.VITE_MICROCMS_API_KEY;
+        if (!apiKey) {
+          console.error('API Key not found. Please set VITE_MICROCMS_API_KEY in .env.local');
+          return;
+        }
+
+        // 開発環境: 直接API呼び出し
+        // 本番環境(Netlify): Netlify Functions経由
+        const isDev = import.meta.env.DEV;
+        const url = isDev
+          ? `https://liangworks.microcms.io/api/v1/taiwanphoto?limit=3&offset=${offset}`
+          : `/.netlify/functions/microcms?limit=3&offset=${offset}`;
         
-        console.log(`Loading photos from: ${url}`);
+        console.log(`[loadPhotos] Fetching from ${isDev ? 'MicroCMS (dev)' : 'Netlify Functions (prod)'}: ${url}`);
         
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒タイムアウト
 
         try {
-          const res = await fetch(url, {
+          const fetchOptions: RequestInit = {
             signal: controller.signal,
-          });
+          };
+          
+          // 開発環境のみAPIキーをヘッダーに付与
+          if (isDev) {
+            fetchOptions.headers = { 'X-MICROCMS-API-KEY': apiKey };
+          }
+          
+          const res = await fetch(url, fetchOptions);
           clearTimeout(timeoutId);
           
-          console.log(`API response status: ${res.status}`);
+          console.log(`[loadPhotos] API response status: ${res.status}`);
           
           if (!res.ok) {
             const errorText = await res.text().catch(() => 'No response text');
@@ -619,22 +636,22 @@ function App() {
               hideEntry(i);
             }
           }
-          console.log(`Photos loaded successfully: offset=${offset}, count=${items.length}, total=${totalCount}`);
+          console.log(`[loadPhotos] Success: offset=${offset}, count=${items.length}, total=${totalCount}`);
         } catch (fetchError) {
           clearTimeout(timeoutId);
           if (fetchError instanceof Error) {
             if (fetchError.name === 'AbortError') {
-              console.error('API request timeout (10s) - Check network connectivity');
+              console.error('[loadPhotos] API request timeout (10s)');
             } else {
-              console.error('API fetch error:', fetchError.message);
-              console.error('Stack:', fetchError.stack);
+              console.error('[loadPhotos] API fetch error:', fetchError.message);
+              console.error('[loadPhotos] Stack:', fetchError.stack);
             }
           } else {
-            console.error('API fetch error:', fetchError);
+            console.error('[loadPhotos] API fetch error:', fetchError);
           }
         }
       } catch (e) {
-        console.error('loadPhotos error', e);
+        console.error('[loadPhotos] Error:', e);
       }
     };
     

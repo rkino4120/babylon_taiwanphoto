@@ -1,14 +1,21 @@
 import { Handler } from "@netlify/functions";
 
 export const handler: Handler = async (event) => {
-  // Netlify環境ではVITE_MICROCMS_API_KEYが環境変数として利用可能
+  // 本番環境: Netlifyの環境変数そのまま使用
+  // 開発環境: .env.localから自動的に読み込まれる
   const apiKey = process.env.VITE_MICROCMS_API_KEY;
   
   if (!apiKey) {
     console.error("VITE_MICROCMS_API_KEY environment variable not found");
+    console.error("Please set VITE_MICROCMS_API_KEY in:");
+    console.error("  - Local: .env.local file");
+    console.error("  - Production: Netlify Environment Variables");
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: "VITE_MICROCMS_API_KEY is not configured" }),
+      body: JSON.stringify({ 
+        error: "VITE_MICROCMS_API_KEY is not configured",
+        message: "API key not found in environment variables"
+      }),
     };
   }
 
@@ -17,7 +24,7 @@ export const handler: Handler = async (event) => {
   const url = `https://liangworks.microcms.io/api/v1/taiwanphoto${query ? "?" + query : ""}`;
 
   try {
-    console.log(`Proxying request to MicroCMS: ${url}`);
+    console.log(`[MicroCMS Proxy] Fetching: ${url}`);
     
     const response = await fetch(url, {
       headers: {
@@ -28,7 +35,9 @@ export const handler: Handler = async (event) => {
     const data = await response.text();
 
     if (!response.ok) {
-      console.error(`MicroCMS API returned ${response.status}: ${data}`);
+      console.error(`[MicroCMS Proxy] API Error ${response.status}: ${data}`);
+    } else {
+      console.log(`[MicroCMS Proxy] Success ${response.status}`);
     }
 
     return {
@@ -42,10 +51,13 @@ export const handler: Handler = async (event) => {
       body: data,
     };
   } catch (error) {
-    console.error("MicroCMS proxy error:", error);
+    console.error("[MicroCMS Proxy] Network error:", error);
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: "Failed to fetch from MicroCMS", details: String(error) }),
+      body: JSON.stringify({ 
+        error: "Failed to fetch from MicroCMS",
+        details: error instanceof Error ? error.message : String(error)
+      }),
     };
   }
 };
