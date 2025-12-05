@@ -129,6 +129,7 @@ function App() {
     let audioCtx: AudioContext | null = null;
     let resonanceScene: any = null;
     let resonanceSource: any = null;
+    let pannerNode: PannerNode | null = null; // fallback if resonance createSource not available
     let resonanceFrontPlaneMesh: Mesh | null = null; // position target for resonance source
 
     // BGM 再生/一時停止トグル
@@ -139,9 +140,47 @@ function App() {
         const AudioCtor = (window as any).AudioContext || (window as any).webkitAudioContext;
         audioCtx = new AudioCtor();
         // dynamic import to avoid types issue
-        const Resonance = (await import('resonance-audio')).default;
-        resonanceScene = new (Resonance as any)(audioCtx, { ambisonicOrder: 1 });
-        resonanceScene.output.connect(audioCtx!.destination);
+        const mod = await import('resonance-audio');
+        console.log('[resonance] module keys:', Object.keys(mod));
+        const modAny: any = mod as any;
+        // The package may export different shapes, try to find constructor
+        let ResonanceCtor: any = null;
+        const candidates: Array<{name: string; fn: any}> = [];
+        if (typeof modAny === 'function') candidates.push({ name: 'module', fn: modAny });
+        if (modAny?.default) candidates.push({ name: 'default', fn: modAny.default });
+        if (modAny?.ResonanceAudio) candidates.push({ name: 'ResonanceAudio', fn: modAny.ResonanceAudio });
+        if (modAny?.Resonance) candidates.push({ name: 'Resonance', fn: modAny.Resonance });
+        // add other function exports (scanning keys)
+        for (const k of Object.keys(modAny || {})) {
+          const v = modAny[k];
+          if (typeof v === 'function') candidates.push({ name: k, fn: v });
+        }
+        console.log('[resonance] constructor candidates:', candidates.map(c => c.name));
+        // pick first candidate that is a function and likely matches resonance
+        for (const c of candidates) {
+          if (typeof c.fn === 'function') {
+            // prefer ones with 'resonance' in the name
+            if (/resonance/i.test(c.name)) {
+              ResonanceCtor = c.fn;
+              console.log('[resonance] picked constructor from candidate:', c.name);
+              break;
+            }
+            // otherwise tentatively use function candidate if none picked later
+            if (!ResonanceCtor) ResonanceCtor = c.fn;
+          }
+        }
+        if (typeof ResonanceCtor !== 'function') {
+          console.error('[resonance] No constructor found on module:', mod);
+          throw new Error('No Resonance constructor in module');
+        }
+        console.log('[resonance] ResonanceCtor:', ResonanceCtor && (ResonanceCtor.name || typeof ResonanceCtor));
+        resonanceScene = new (ResonanceCtor as any)(audioCtx, { ambisonicOrder: 1 });
+        // output should be an AudioNode to connect to audioCtx.destination
+        if (resonanceScene.output && typeof resonanceScene.output.connect === 'function') {
+          resonanceScene.output.connect(audioCtx!.destination);
+        } else if (audioCtx && resonanceScene.output) {
+          try { (audioCtx.destination as any).connect(resonanceScene.output); } catch (e) { /* ignore */ }
+        }
         // optional: set default room size (width, height, depth)
         if (typeof resonanceScene.setRoomProperties === 'function') {
           try { resonanceScene.setRoomProperties({ width: 10, height: 3, depth: 10 }); } catch (e) {}
@@ -333,18 +372,43 @@ function App() {
             bgmMedia.volume = 0.5;
             // createMediaElementSource から Resonance の source.input に接続
             const srcNode = audioCtx.createMediaElementSource(bgmMedia);
-            resonanceSource = resonanceScene.createSource();
-            srcNode.connect(resonanceSource.input);
+            if (resonanceScene && typeof resonanceScene.createSource === 'function') {
+              resonanceSource = resonanceScene.createSource();
+              srcNode.connect(resonanceSource.input);
+            } else {
+              // Fallback: use WebAudio PannerNode for spatialization
+              pannerNode = audioCtx.createPanner();
+              // Panner config — tuned for basic spatialization
+              try { pannerNode.panningModel = 'HRTF'; } catch (e) { /* ignore */ }
+              try { pannerNode.distanceModel = 'inverse'; } catch (e) { /* ignore */ }
+              try { pannerNode.refDistance = 1; } catch (e) { /* ignore */ }
+              try { pannerNode.maxDistance = 20; } catch (e) { /* ignore */ }
+              try { pannerNode.rolloffFactor = 1; } catch (e) { /* ignore */ }
+              srcNode.connect(pannerNode);
+              pannerNode.connect(audioCtx.destination);
+            }
             // frontPlane の位置をソースターゲットに保持
             resonanceFrontPlaneMesh = frontPlane;
             // 初期位置合わせ
             try {
               const pos = frontPlane.getAbsolutePosition();
               if (resonanceSource && typeof resonanceSource.setPosition === 'function') {
-                resonanceSource.setPosition(pos.x, pos.y, pos.z);
-              }
+                  resonanceSource.setPosition(pos.x, pos.y, pos.z);
+                } else if (pannerNode && typeof (pannerNode as any).positionX !== 'undefined') {
+                  try { (pannerNode.positionX as any).setValueAtTime(pos.x, audioCtx.currentTime); } catch (e) { /* ignore */ }
+                  try { (pannerNode.positionY as any).setValueAtTime(pos.y, audioCtx.currentTime); } catch (e) { /* ignore */ }
+                  try { (pannerNode.positionZ as any).setValueAtTime(pos.z, audioCtx.currentTime); } catch (e) { /* ignore */ }
+                } else if (pannerNode && typeof (pannerNode as any).setPosition === 'function') {
+                  try { (pannerNode as any).setPosition(pos.x, pos.y, pos.z); } catch (e) { /* ignore */ }
+                }
             } catch (e) { /* ignore */ }
-            console.log('BGM loaded successfully (ResonanceAudio)');
+            if (resonanceSource) {
+              console.log('BGM loaded successfully (ResonanceAudio source)');
+            } else if (pannerNode) {
+              console.log('BGM loaded successfully (PannerNode fallback)');
+            } else {
+              console.log('BGM loaded successfully (audio element connected)');
+            }
           }
         } catch (e) {
           console.warn('BGM load failed (ResonanceAudio)', e);
@@ -901,6 +965,10 @@ function App() {
       if (resonanceSource) {
         try { if (resonanceSource.disconnect) resonanceSource.disconnect(); } catch (e) { /* ignore */ }
         resonanceSource = null;
+      }
+      if (pannerNode) {
+        try { pannerNode.disconnect(); } catch (e) { /* ignore */ }
+        pannerNode = null;
       }
       if (audioCtx) {
         try { audioCtx.close(); } catch (e) { /* ignore */ }
