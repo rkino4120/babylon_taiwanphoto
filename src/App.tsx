@@ -131,6 +131,11 @@ function App() {
     let resonanceSource: any = null;
     let pannerNode: PannerNode | null = null; // fallback if resonance createSource not available
     let resonanceFrontPlaneMesh: Mesh | null = null; // position target for resonance source
+    // XR / VR camera handling
+    let xrBaseExperience: any = null;
+    let xrCamera: any = null;
+    let isInXR = false;
+    let savedBrowserCameraState: any = null;
 
     // Loading overlay / progress
     let totalAssets = 0;
@@ -141,6 +146,7 @@ function App() {
     let loadingOverlayShownAt = 0;
     const loadingOverlayMinMs = 300;
     const registeredAssetKeys = new Set<string>();
+    const TEXT_SCALE = 2;
 
     const createLoadingOverlay = () => {
       if (loadingOverlay) return;
@@ -625,27 +631,35 @@ function App() {
 
     // --- ヘルパー: テキスト描画 ---
     const drawTextOnTexture = (texture: DynamicTexture, title: string, body: string, date: string) => {
-      // 型エラー回避のため、標準の CanvasRenderingContext2D にキャストします
+      // Render at TEXT_SCALE x resolution for crisper text
+      // use global TEXT_SCALE
+      const baseWidth = 1024;
+      const baseHeight = 410;
       const ctx = texture.getContext() as unknown as CanvasRenderingContext2D;
-      const width = 1024;
-      const height = 410; // テクスチャサイズ
+      const width = baseWidth * TEXT_SCALE;
+      const height = baseHeight * TEXT_SCALE; // テクスチャサイズ (scaled)
+      // try to disable smoothing to reduce blurring where possible
+      try { (ctx as any).imageSmoothingEnabled = false; } catch (e) { /* ignore */ }
+      try { (ctx as any).webkitImageSmoothingEnabled = false; } catch (e) { /* ignore */ }
+      try { (ctx as any).msImageSmoothingEnabled = false; } catch (e) { /* ignore */ }
 
       // クリア
       ctx.clearRect(0, 0, width, height);
 
       // タイトル
-      ctx.font = "bold 24px 'Noto Sans JP', sans-serif";
+      ctx.font = `bold ${24 * TEXT_SCALE}px 'Noto Sans JP', sans-serif`;
       ctx.fillStyle = "white";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(title, width / 2, 80);
+      ctx.fillText(title, Math.round(width / 2), Math.round(80 * TEXT_SCALE));
 
       // 本文（簡易折り返し + <br> 対応）
-      ctx.font = "10px 'Noto Sans JP', sans-serif";
+      ctx.font = `${10 * TEXT_SCALE}px 'Noto Sans JP', sans-serif`;
       ctx.fillStyle = "white";
-      const maxLineWidth = 900;
-      const lineHeight = 30;
-      let y = 150;
+      // scale layout values to TEXT_SCALE
+      const maxLineWidth = 900 * TEXT_SCALE;
+      const lineHeight = 30 * TEXT_SCALE;
+      let y = 150 * TEXT_SCALE;
 
       // HTML 内の <br> を改行に変換してからテキストを取り出す
       const tempDiv = document.createElement('div');
@@ -664,29 +678,29 @@ function App() {
           const testLine = line + chars[n];
           const testWidth = ctx.measureText(testLine).width;
           if (testWidth > maxLineWidth && n > 0) {
-            ctx.fillText(line, width / 2, y);
+            ctx.fillText(line, Math.round(width / 2), Math.round(y));
             line = chars[n];
             y += lineHeight;
-            if (y > 320) break paragraphLoop; // テクスチャ高さを超えたら終了
+            if (y > 320 * TEXT_SCALE) break paragraphLoop; // テクスチャ高さを超えたら終了
           } else {
             line = testLine;
           }
         }
 
         // 残りの行を描画
-        if (y <= 320) {
-          ctx.fillText(line, width / 2, y);
+        if (y <= 320 * TEXT_SCALE) {
+          ctx.fillText(line, Math.round(width / 2), Math.round(y));
         }
 
         // 段落間の余白
         y += lineHeight;
-        if (y > 320) break;
+        if (y > 320 * TEXT_SCALE) break;
       }
 
       // 日付（少し上に表示）
-      ctx.font = "10px 'Noto Sans JP', sans-serif";
+      ctx.font = `${10 * TEXT_SCALE}px 'Noto Sans JP', sans-serif`;
       ctx.fillStyle = "#cccccc";
-      ctx.fillText(date, width / 2, 220);
+      ctx.fillText(date, Math.round(width / 2), Math.round(220 * TEXT_SCALE));
 
       texture.update();
     };
@@ -799,8 +813,13 @@ function App() {
         textPlane.position = new Vector3(xOffset, textY, textzPos);
         textPlane.rotation.y = rotY;
 
-        // DynamicTextureでテキストを作成 (1024x410)
-        const textTexture = new DynamicTexture(`textTexture${index}`, { width: 1024, height: 410 }, scene);
+        // DynamicTextureでテキストを作成 (2x for crisper text)
+        // use global TEXT_SCALE
+        const TEXT_BASE_WIDTH = 1024;
+        const TEXT_BASE_HEIGHT = 410;
+        const textTexture = new DynamicTexture(`textTexture${index}`, { width: TEXT_BASE_WIDTH * TEXT_SCALE, height: TEXT_BASE_HEIGHT * TEXT_SCALE }, scene);
+        // prefer trilinear sampling for downscaling; adjust if pixel-art desired
+        try { textTexture.updateSamplingMode(Texture.TRILINEAR_SAMPLINGMODE); } catch (e) { /* ignore */ }
         textTexture.hasAlpha = true;
 
         const textMat = new StandardMaterial(`textMat${index}`, scene);
@@ -1066,10 +1085,25 @@ function App() {
         if (xr.baseExperience) {
           // 確実に壁の間の中央に配置する
           xr.baseExperience.camera.position = new Vector3(0, 1.6, 0);
+          xrBaseExperience = xr.baseExperience;
+          xrCamera = xrBaseExperience.camera;
 
           // セッション開始/終了で BGM を制御
           xr.baseExperience.sessionManager.onXRSessionInit.add(() => {
             console.log('XR Session Init: Starting BGM');
+            // save browser camera state and detach controls so ArcRotateCamera doesn't affect XR camera
+            try {
+              savedBrowserCameraState = {
+                alpha: camera.alpha,
+                beta: camera.beta,
+                radius: camera.radius,
+                target: camera.getTarget().clone(),
+              };
+            } catch (e) { savedBrowserCameraState = null; }
+            try { camera.detachControl(); } catch (e) { /* ignore */ }
+            isInXR = true;
+            // make sure XR camera has an expected starting position
+            try { if (xrCamera) xrCamera.position = new Vector3(0, 1.6, 0); } catch (e) { /* ignore */ }
             // Ensure the audio context resumes if required, then play
             if (bgmMedia && !bgmPlaying) {
               void toggleBgm();
@@ -1086,6 +1120,18 @@ function App() {
                 console.warn('BGM stop failed', e);
               }
             }
+            // restore browser camera state and reattach controls
+            try {
+              if (savedBrowserCameraState) {
+                camera.alpha = savedBrowserCameraState.alpha;
+                camera.beta = savedBrowserCameraState.beta;
+                camera.radius = savedBrowserCameraState.radius;
+                camera.setTarget(savedBrowserCameraState.target);
+                savedBrowserCameraState = null;
+              }
+            } catch (e) { /* ignore */ }
+            try { camera.attachControl(canvasRef.current, true); } catch (e) { /* ignore */ }
+            isInXR = false;
           });
         }
       } catch (error) {
@@ -1098,11 +1144,23 @@ function App() {
     engine.runRenderLoop(() => {
       // Update listener + resonance source positions for spatial audio
       try {
-        if (audioCtx && audioCtx.listener) {
+          if (audioCtx && audioCtx.listener) {
           const listener = audioCtx.listener as any;
-          const pos = camera.position;
-          const target = camera.getTarget();
-          const forward = target.subtract(pos).normalize();
+          const activeCamera = (isInXR && xrCamera) ? xrCamera : camera;
+          const pos = activeCamera.position;
+          let forward: Vector3;
+          try {
+            if (typeof activeCamera.getDirection === 'function') {
+              forward = activeCamera.getDirection(new Vector3(0, 0, 1));
+            } else if (typeof activeCamera.getTarget === 'function') {
+              const target = activeCamera.getTarget();
+              forward = target.subtract(pos).normalize();
+            } else {
+              forward = new Vector3(0, 0, 1);
+            }
+          } catch (e) {
+            forward = new Vector3(0, 0, 1);
+          }
           if (listener.positionX) {
             try {
               (listener.positionX as any).setValueAtTime(pos.x, audioCtx.currentTime);
@@ -1111,15 +1169,15 @@ function App() {
               (listener.forwardX as any).setValueAtTime(forward.x, audioCtx.currentTime);
               (listener.forwardY as any).setValueAtTime(forward.y, audioCtx.currentTime);
               (listener.forwardZ as any).setValueAtTime(forward.z, audioCtx.currentTime);
-              (listener.upX as any).setValueAtTime(camera.upVector.x, audioCtx.currentTime);
-              (listener.upY as any).setValueAtTime(camera.upVector.y, audioCtx.currentTime);
-              (listener.upZ as any).setValueAtTime(camera.upVector.z, audioCtx.currentTime);
+              (listener.upX as any).setValueAtTime(activeCamera.upVector.x, audioCtx.currentTime);
+              (listener.upY as any).setValueAtTime(activeCamera.upVector.y, audioCtx.currentTime);
+              (listener.upZ as any).setValueAtTime(activeCamera.upVector.z, audioCtx.currentTime);
             } catch (e) {
               /* ignore */
             }
           } else if (typeof listener.setPosition === 'function') {
             try { listener.setPosition(pos.x, pos.y, pos.z); } catch (e) { /* ignore */ }
-            try { listener.setOrientation(forward.x, forward.y, forward.z, camera.upVector.x, camera.upVector.y, camera.upVector.z); } catch (e) { /* ignore */ }
+            try { listener.setOrientation(forward.x, forward.y, forward.z, activeCamera.upVector.x, activeCamera.upVector.y, activeCamera.upVector.z); } catch (e) { /* ignore */ }
           }
         }
 
@@ -1143,7 +1201,7 @@ function App() {
               try { (pannerNode as any).setPosition(p.x, p.y, p.z); } catch (e) { /* ignore */ }
             }
             // orientation: face listener
-            const listenerPos = camera.position;
+            const listenerPos = (isInXR && xrCamera) ? xrCamera.position : camera.position;
             const dir = listenerPos.subtract(p).normalize();
             if (typeof (pannerNode as any).orientationX !== 'undefined') {
               try { (pannerNode as any).orientationX.setValueAtTime(dir.x, audioCtx.currentTime); } catch (e) { /* ignore */ }
