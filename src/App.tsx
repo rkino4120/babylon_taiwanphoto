@@ -132,6 +132,153 @@ function App() {
     let pannerNode: PannerNode | null = null; // fallback if resonance createSource not available
     let resonanceFrontPlaneMesh: Mesh | null = null; // position target for resonance source
 
+    // Loading overlay / progress
+    let totalAssets = 0;
+    let loadedAssets = 0;
+    let loadingOverlay: HTMLDivElement | null = null;
+    let loadingTextDiv: HTMLDivElement | null = null;
+    let loadingBarInner: HTMLDivElement | null = null;
+    let loadingOverlayShownAt = 0;
+    const loadingOverlayMinMs = 300;
+    const registeredAssetKeys = new Set<string>();
+
+    const createLoadingOverlay = () => {
+      if (loadingOverlay) return;
+      // new loading session: clear previous keys and counters
+      registeredAssetKeys.clear();
+      totalAssets = 0;
+      loadedAssets = 0;
+      loadingOverlay = document.createElement('div');
+      loadingOverlay.id = 'app-loading-overlay';
+      const s = loadingOverlay.style;
+      s.position = 'fixed';
+      s.left = '0';
+      s.top = '0';
+      s.width = '100%';
+      s.height = '100%';
+      s.display = 'flex';
+      s.flexDirection = 'column';
+      s.justifyContent = 'center';
+      s.alignItems = 'center';
+      s.backgroundColor = 'rgba(0,0,0,0.8)';
+      s.zIndex = '100000';
+      s.color = 'white';
+
+      loadingTextDiv = document.createElement('div');
+      loadingTextDiv.style.fontSize = '18px';
+      loadingTextDiv.style.marginBottom = '10px';
+      loadingTextDiv.textContent = 'あと 100%';
+      loadingOverlay.appendChild(loadingTextDiv);
+
+      const bar = document.createElement('div');
+      bar.style.width = '60%';
+      bar.style.height = '8px';
+      bar.style.backgroundColor = '#444';
+      bar.style.borderRadius = '8px';
+      bar.style.overflow = 'hidden';
+      const inner = document.createElement('div');
+      inner.style.width = '0%';
+      inner.style.height = '100%';
+      inner.style.backgroundColor = '#1db954';
+      inner.style.transition = 'width 200ms linear';
+      bar.appendChild(inner);
+      loadingBarInner = inner;
+      loadingOverlay.appendChild(bar);
+
+      document.body.appendChild(loadingOverlay);
+      loadingOverlayShownAt = Date.now();
+    };
+
+    const updateLoadingOverlay = () => {
+      if (!loadingTextDiv || !loadingBarInner) return;
+      const percent = totalAssets === 0 ? 0 : Math.round((loadedAssets / totalAssets) * 100);
+      const remaining = 100 - percent;
+      loadingTextDiv.textContent = `あと ${remaining}%`; // Japanese: "remaining %"
+      loadingBarInner.style.width = `${percent}%`;
+      if (totalAssets > 0 && loadedAssets >= totalAssets) {
+        // hide overlay after short delay
+        const hideNow = () => {
+          if (loadingOverlay && loadingOverlay.parentElement) {
+            try { loadingOverlay.parentElement.removeChild(loadingOverlay); } catch (e) { /* ignore */ }
+          }
+          loadingOverlay = null;
+          loadingTextDiv = null;
+          loadingBarInner = null;
+          loadingOverlayShownAt = 0;
+        };
+        const elapsed = Date.now() - (loadingOverlayShownAt || 0);
+        const waitMs = Math.max(0, (loadingOverlayMinMs || 0) - elapsed);
+        setTimeout(hideNow, waitMs + 220);
+      }
+    };
+
+    const registerAsset = (key?: string) => {
+      // If a key is given, check for dupes
+      if (key) {
+        if (registeredAssetKeys.has(key)) {
+          // no-op done function for deduped assets
+          return () => {};
+        }
+        registeredAssetKeys.add(key);
+      }
+      totalAssets++;
+      // show overlay when first asset is registered
+      createLoadingOverlay();
+      updateLoadingOverlay();
+      return () => {
+        loadedAssets++;
+        updateLoadingOverlay();
+      };
+    };
+
+    // registerPromise helper removed (unused) - use registerAsset directly for promises if needed
+
+    const registerImage = (img: HTMLImageElement, key?: string) => {
+      const k = key || img?.src || `img:${Math.random().toString(36).slice(2)}`;
+      const done = registerAsset(k);
+      const onLoad = () => { done(); cleanup(); };
+      const onError = () => { done(); cleanup(); };
+      const cleanup = () => { img.removeEventListener('load', onLoad); img.removeEventListener('error', onError); };
+      img.addEventListener('load', onLoad);
+      img.addEventListener('error', onError);
+    };
+
+    const registerTexture = (tex: Texture, key?: string) => {
+      // Texture.name often holds the url passed in; fallback to random key
+      const k = key || (tex as any).name || (tex as any).url || `tex:${Math.random().toString(36).slice(2)}`;
+      const done = registerAsset(k);
+      try {
+        // Babylon's Texture has onLoadObservable/onErrorObservable
+        if ((tex as any).onLoadObservable && typeof (tex as any).onLoadObservable.addOnce === 'function') {
+          (tex as any).onLoadObservable.addOnce(() => done());
+        } else {
+          // fallback: mark loaded quickly
+          done();
+        }
+      } catch (e) {
+        done();
+      }
+    };
+
+    const registerAudioElement = (el: HTMLAudioElement, key?: string) => {
+      const k = key || el?.src || `audio:${Math.random().toString(36).slice(2)}`;
+      const done = registerAsset(k);
+      const onLoad = () => { done(); cleanup(); };
+      const onError = () => { done(); cleanup(); };
+      const cleanup = () => { el.removeEventListener('canplaythrough', onLoad); el.removeEventListener('error', onError); };
+      el.addEventListener('canplaythrough', onLoad, { once: true } as any);
+      el.addEventListener('error', onError, { once: true } as any);
+    };
+
+    // Spatial audio tuning parameters
+    const spatialConfig = {
+      room: { width: 10, height: 3, depth: 10 },
+      roomReflection: { left: 0.2, right: 0.2, front: 0.15, back: 0.15, up: 0.05, down: 0.05 },
+      reverb: { gain: 0.25, duration: 1.8 },
+      source: { gain: 1.0, directivityAlpha: 0.0, directivitySharpness: 0.7 },
+      panner: { panningModel: 'HRTF', distanceModel: 'inverse', refDistance: 0.8, maxDistance: 40, rolloffFactor: 1.1, coneInnerAngle: 60, coneOuterAngle: 120, coneOuterGain: 0.2 }
+    };
+
     // BGM 再生/一時停止トグル
     const initResonance = async () => {
       if (audioCtx) return { audioCtx, resonanceScene };
@@ -178,12 +325,20 @@ function App() {
         // output should be an AudioNode to connect to audioCtx.destination
         if (resonanceScene.output && typeof resonanceScene.output.connect === 'function') {
           resonanceScene.output.connect(audioCtx!.destination);
-        } else if (audioCtx && resonanceScene.output) {
-          try { (audioCtx.destination as any).connect(resonanceScene.output); } catch (e) { /* ignore */ }
+        } else {
+          // If the library doesn't expose an output AudioNode, don't attempt a reverse connect.
+          // We'll leave the resonance scene to route internally if needed and warn for debugging.
+          console.warn('[resonance] resonanceScene.output missing or not an AudioNode; skipping connection');
         }
-        // optional: set default room size (width, height, depth)
+        // set default room size and reflection/reverb tuning
         if (typeof resonanceScene.setRoomProperties === 'function') {
-          try { resonanceScene.setRoomProperties({ width: 10, height: 3, depth: 10 }); } catch (e) {}
+          try { resonanceScene.setRoomProperties(spatialConfig.room); console.log('[resonance] setRoomProperties', spatialConfig.room); } catch (e) { console.warn('[resonance] setRoomProperties failed', e); }
+        }
+        if (typeof resonanceScene.setRoomMaterials === 'function') {
+          try { resonanceScene.setRoomMaterials(spatialConfig.roomReflection); console.log('[resonance] setRoomMaterials', spatialConfig.roomReflection); } catch (e) { /* ignore */ }
+        }
+        if (typeof resonanceScene.setReverbProperties === 'function') {
+          try { resonanceScene.setReverbProperties(spatialConfig.reverb); console.log('[resonance] setReverbProperties', spatialConfig.reverb); } catch (e) { /* ignore */ }
         }
         console.log('ResonanceAudio initialized');
         return { audioCtx, resonanceScene };
@@ -233,10 +388,12 @@ function App() {
     const ground = MeshBuilder.CreateGround('ground', { width: 10, height: 10 }, scene);
     const groundMaterial = new StandardMaterial('groundMaterial', scene);
     const diffuseTexture = new Texture('images/concrete_floor_worn_001_diff_1k.jpg', scene);
+    try { registerTexture(diffuseTexture, 'images/concrete_floor_worn_001_diff_1k.jpg'); } catch (e) { /* ignore */ }
     diffuseTexture.uScale = 5;
     diffuseTexture.vScale = 5;
     groundMaterial.diffuseTexture = diffuseTexture;
     const bumpTexture = new Texture('images/concrete_floor_worn_001_nor_gl_1k.png', scene);
+    try { registerTexture(bumpTexture, 'images/concrete_floor_worn_001_nor_gl_1k.png'); } catch (e) { /* ignore */ }
     bumpTexture.uScale = 5;
     bumpTexture.vScale = 5;
     groundMaterial.bumpTexture = bumpTexture;
@@ -250,6 +407,7 @@ function App() {
 
     // 矢印ボタン
     const arrowTex = new Texture('images/arrow.png', scene);
+    try { registerTexture(arrowTex, 'images/arrow.png'); } catch (e) { /* ignore */ }
     arrowTex.hasAlpha = true;
     const arrowMat = new StandardMaterial('arrowMat', scene);
     arrowMat.diffuseTexture = arrowTex;
@@ -260,6 +418,7 @@ function App() {
     arrowMat.freeze();
 
     const arrowImg = new Image();
+    try { registerImage(arrowImg, 'images/arrow.png'); } catch (e) { /* ignore */ }
     arrowImg.onload = () => {
       if (scene.isDisposed) return;
       const iw = arrowImg.naturalWidth || 1;
@@ -294,10 +453,12 @@ function App() {
     const wallMaterial = new StandardMaterial('wallMaterial', scene);
     wallMaterial.backFaceCulling = false;
     const wallDiffuseTexture = new Texture('images/painted_plaster_wall_diff_1k.jpg', scene);
+    try { registerTexture(wallDiffuseTexture, 'images/painted_plaster_wall_diff_1k.jpg'); } catch (e) { /* ignore */ }
     wallDiffuseTexture.uScale = 5;
     wallDiffuseTexture.vScale = 2;
     wallMaterial.diffuseTexture = wallDiffuseTexture;
     const wallBumpTexture = new Texture('images/painted_plaster_wall_nor_gl_1k.png', scene);
+    try { registerTexture(wallBumpTexture, 'images/painted_plaster_wall_nor_gl_1k.png'); } catch (e) { /* ignore */ }
     wallBumpTexture.uScale = 5;
     wallBumpTexture.vScale = 2;
     wallMaterial.bumpTexture = wallBumpTexture;
@@ -329,6 +490,7 @@ function App() {
 
       // frontpage: 画像を読み込んでアスペクト比に基づきリサイズ（高さ基準）
       const frontImg = new Image();
+      try { registerImage(frontImg, 'images/frontpage.jpg'); } catch (e) { /* ignore */ }
       let frontLoaded = false;
       frontImg.onload = async () => {
         if (frontLoaded || scene.isDisposed) return;
@@ -340,6 +502,7 @@ function App() {
         const targetW = targetH * aspect;
 
         frontMat.diffuseTexture = new Texture('images/frontpage.jpg', scene);
+        try { registerTexture(frontMat.diffuseTexture as Texture, 'images/frontpage.jpg'); } catch (e) { /* ignore */ }
         frontMat.emissiveTexture = frontMat.diffuseTexture;
 
         const frontPlane = MeshBuilder.CreatePlane('frontpage', { width: targetW, height: targetH }, scene);
@@ -367,6 +530,7 @@ function App() {
           if (audioCtx && resonanceScene) {
             // メディア要素を作成して source に接続
             bgmMedia = new Audio('sound/bgm.mp3');
+            try { registerAudioElement(bgmMedia, 'sound/bgm.mp3'); } catch (e) { /* ignore */ }
             bgmMedia.crossOrigin = 'anonymous';
             bgmMedia.loop = true;
             bgmMedia.volume = 0.5;
@@ -375,15 +539,28 @@ function App() {
             if (resonanceScene && typeof resonanceScene.createSource === 'function') {
               resonanceSource = resonanceScene.createSource();
               srcNode.connect(resonanceSource.input);
+              // tune source if API available
+              try {
+                if (typeof resonanceSource.setGain === 'function') resonanceSource.setGain(spatialConfig.source.gain);
+                if (typeof resonanceSource.setDirectivity === 'function') resonanceSource.setDirectivity(spatialConfig.source.directivityAlpha, spatialConfig.source.directivitySharpness);
+                if (typeof resonanceSource.setDirectivityAlpha === 'function') resonanceSource.setDirectivityAlpha(spatialConfig.source.directivityAlpha);
+                if (typeof resonanceSource.setDirectivitySharpness === 'function') resonanceSource.setDirectivitySharpness(spatialConfig.source.directivitySharpness);
+                if (typeof resonanceSource.setWidth === 'function') resonanceSource.setWidth(0.5);
+                console.log('[resonance] source tune applied (gain, directivity, width)');
+              } catch (e) { /* ignore */ }
             } else {
               // Fallback: use WebAudio PannerNode for spatialization
               pannerNode = audioCtx.createPanner();
               // Panner config — tuned for basic spatialization
-              try { pannerNode.panningModel = 'HRTF'; } catch (e) { /* ignore */ }
-              try { pannerNode.distanceModel = 'inverse'; } catch (e) { /* ignore */ }
-              try { pannerNode.refDistance = 1; } catch (e) { /* ignore */ }
-              try { pannerNode.maxDistance = 20; } catch (e) { /* ignore */ }
-              try { pannerNode.rolloffFactor = 1; } catch (e) { /* ignore */ }
+              try { pannerNode.panningModel = spatialConfig.panner.panningModel as any; } catch (e) { /* ignore */ }
+              try { pannerNode.distanceModel = spatialConfig.panner.distanceModel as any; } catch (e) { /* ignore */ }
+              try { pannerNode.refDistance = spatialConfig.panner.refDistance; } catch (e) { /* ignore */ }
+              try { pannerNode.maxDistance = spatialConfig.panner.maxDistance; } catch (e) { /* ignore */ }
+              try { pannerNode.rolloffFactor = spatialConfig.panner.rolloffFactor; } catch (e) { /* ignore */ }
+              try { pannerNode.coneInnerAngle = spatialConfig.panner.coneInnerAngle; } catch (e) { /* ignore */ }
+              try { pannerNode.coneOuterAngle = spatialConfig.panner.coneOuterAngle; } catch (e) { /* ignore */ }
+              try { pannerNode.coneOuterGain = spatialConfig.panner.coneOuterGain; } catch (e) { /* ignore */ }
+              console.log('[resonance] pannerNode config applied', spatialConfig.panner);
               srcNode.connect(pannerNode);
               pannerNode.connect(audioCtx.destination);
             }
@@ -420,6 +597,7 @@ function App() {
 
       // profilepage: 同上（下側）
       const profileImg = new Image();
+      try { registerImage(profileImg, 'images/profilepage.jpg'); } catch (e) { /* ignore */ }
       let profileLoaded = false;
       profileImg.onload = () => {
         if (profileLoaded || scene.isDisposed) return;
@@ -431,6 +609,7 @@ function App() {
         const targetW = targetH * aspect;
 
         profileMat.diffuseTexture = new Texture('images/profilepage.jpg', scene);
+        try { registerTexture(profileMat.diffuseTexture as Texture, 'images/profilepage.jpg'); } catch (e) { /* ignore */ }
         profileMat.emissiveTexture = profileMat.diffuseTexture;
 
         const profilePlane = MeshBuilder.CreatePlane('profilepage', { width: targetW, height: targetH }, scene);
@@ -574,6 +753,7 @@ function App() {
         mat.disableLighting = true;
         mat.emissiveColor = new Color3(1, 1, 1);
         mat.diffuseTexture = new Texture(work.photo.url, scene);
+        try { registerTexture(mat.diffuseTexture as Texture, work.photo.url); } catch (e) { /* ignore */ }
         mat.emissiveTexture = mat.diffuseTexture;
         
         // コントラスト調整: 高すぎるコントラストを緩和
@@ -690,6 +870,7 @@ function App() {
         
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒タイムアウト
+        let _fetchDone: any = null;
 
         try {
           const fetchOptions: RequestInit = {
@@ -700,7 +881,10 @@ function App() {
           if (isDev) {
             fetchOptions.headers = { 'X-MICROCMS-API-KEY': apiKey };
           }
-          
+
+          // Register this fetch as an asset for progress reporting
+          try { _fetchDone = registerAsset(url); } catch (e) { /* ignore */ }
+
           const res = await fetch(url, fetchOptions);
           clearTimeout(timeoutId);
           
@@ -711,7 +895,10 @@ function App() {
             throw new Error(`API Error: ${res.status} ${res.statusText} - ${errorText}`);
           }
           
-          if (scene.isDisposed) return;
+          if (scene.isDisposed) {
+            if (_fetchDone) { try { _fetchDone(); } catch (e) { /* ignore */ } _fetchDone = null; }
+            return;
+          }
   
           const data: MicroCMSResponse = await res.json();
           totalCount = data.totalCount || 0;
@@ -726,8 +913,10 @@ function App() {
             }
           }
           console.log(`[loadPhotos] Success: offset=${offset}, count=${items.length}, total=${totalCount}`);
+          if (_fetchDone) { try { _fetchDone(); } catch (e) { /* ignore */ } _fetchDone = null; }
         } catch (fetchError) {
           clearTimeout(timeoutId);
+          if (_fetchDone) { try { _fetchDone(); } catch (e) { /* ignore */ } _fetchDone = null; }
           if (fetchError instanceof Error) {
             if (fetchError.name === 'AbortError') {
               console.error('[loadPhotos] API request timeout (10s)');
@@ -942,6 +1131,29 @@ function App() {
             }
           } catch (e) { /* ignore */ }
         }
+        if (pannerNode && resonanceFrontPlaneMesh && audioCtx) {
+          try {
+            const p = resonanceFrontPlaneMesh.getAbsolutePosition();
+            // position
+            if (typeof (pannerNode as any).positionX !== 'undefined') {
+              try { (pannerNode.positionX as any).setValueAtTime(p.x, audioCtx.currentTime); } catch (e) { /* ignore */ }
+              try { (pannerNode.positionY as any).setValueAtTime(p.y, audioCtx.currentTime); } catch (e) { /* ignore */ }
+              try { (pannerNode.positionZ as any).setValueAtTime(p.z, audioCtx.currentTime); } catch (e) { /* ignore */ }
+            } else if (typeof (pannerNode as any).setPosition === 'function') {
+              try { (pannerNode as any).setPosition(p.x, p.y, p.z); } catch (e) { /* ignore */ }
+            }
+            // orientation: face listener
+            const listenerPos = camera.position;
+            const dir = listenerPos.subtract(p).normalize();
+            if (typeof (pannerNode as any).orientationX !== 'undefined') {
+              try { (pannerNode as any).orientationX.setValueAtTime(dir.x, audioCtx.currentTime); } catch (e) { /* ignore */ }
+              try { (pannerNode as any).orientationY.setValueAtTime(dir.y, audioCtx.currentTime); } catch (e) { /* ignore */ }
+              try { (pannerNode as any).orientationZ.setValueAtTime(dir.z, audioCtx.currentTime); } catch (e) { /* ignore */ }
+            } else if (typeof (pannerNode as any).setOrientation === 'function') {
+              try { (pannerNode as any).setOrientation(dir.x, dir.y, dir.z); } catch (e) { /* ignore */ }
+            }
+          } catch (e) { /* ignore */ }
+        }
       } catch (e) {
         /* ignore */
       }
@@ -973,6 +1185,9 @@ function App() {
       if (audioCtx) {
         try { audioCtx.close(); } catch (e) { /* ignore */ }
         audioCtx = null;
+      }
+      if (loadingOverlay && loadingOverlay.parentElement) {
+        try { loadingOverlay.parentElement.removeChild(loadingOverlay); } catch (e) { /* ignore */ }
       }
       // AudioEngineV2 intentionally removed; resonance-audio is used for sound.
       scene.dispose();
