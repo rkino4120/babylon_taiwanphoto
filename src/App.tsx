@@ -109,13 +109,13 @@ function App() {
       const spotLight = new SpotLight(
         `spotLight${index}`,
         position,
-        new Vector3(0, -1, 0),
+        new Vector3(0, -2, 0),
         Math.PI / 3,
-        50,
+        30,
         scene
       );
-      spotLight.intensity = 1.2;
-      spotLight.innerAngle = Math.PI / 6;
+      spotLight.intensity = 2.0;
+      spotLight.innerAngle = Math.PI / 8;
     });
 
     // --- 変数管理 ---
@@ -560,7 +560,7 @@ function App() {
     // plant01とplant02を読み込み
     loadGLB('plant01.glb', new Vector3(1.5, 0, -0.7));
     loadGLB('plant02.glb', new Vector3(-1.0, 0, -0.7));
-    loadGLB('plant02.glb', new Vector3(2.5, 0, 0.7));
+    loadGLB('plant02.glb', new Vector3(3, 0, 0.7));
     loadGLB('plant04.glb', new Vector3(-3.2, 0, -0.75));
 
 
@@ -862,10 +862,11 @@ function App() {
         photoPlane.material = mat;
 
         // White frame
-        const frameThickness = 0.04; // 以前の 0.08 の半分
+        // Increase thickness to make the frame more visible (previously 0.04)
+        const frameThickness = 0.08;
         const whiteFramePlane = MeshBuilder.CreatePlane(`frame_white${index}`, { width: planeW + frameThickness * 2, height: planeH + frameThickness * 2 }, scene);
           const zDir = index < 2 ? -1 : 1; 
-          const whitezPos = zPos + (0.002 * zDir); 
+          const whitezPos = zPos + (0.004 * zDir); 
         whiteFramePlane.position = new Vector3(xOffset, centerY, whitezPos);
         whiteFramePlane.rotation.y = rotY;
         const whiteFrameMat = new StandardMaterial(`frameWhiteMat${index}`, scene);
@@ -875,9 +876,10 @@ function App() {
         whiteFramePlane.material = whiteFrameMat;
 
         // Black frame
-        const blackFrameThickness = 0.02; // 以前の 0.04 の半分
+        // Keep slightly thinner than the white frame for the inner border
+        const blackFrameThickness = 0.04;
         const blackFramePlane = MeshBuilder.CreatePlane(`frame_black${index}`, { width: planeW + blackFrameThickness * 2, height: planeH + blackFrameThickness * 2 }, scene);
-        const blackzPos = zPos + (0.001 * zDir);
+        const blackzPos = zPos + (0.002 * zDir);
         blackFramePlane.position = new Vector3(xOffset, centerY, blackzPos);
         blackFramePlane.rotation.y = rotY;
         const blackFrameMat = new StandardMaterial(`frameBlackMat${index}`, scene);
