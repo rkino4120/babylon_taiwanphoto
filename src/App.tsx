@@ -85,7 +85,7 @@ function App() {
       -Math.PI / 2,
       Math.PI / 2.5,
       2,
-      new Vector3(0, 1.6, 0), // VRと同じ初期位置
+      new Vector3(-1, 1.6, 0), // VRと同じ初期位置
       scene
     );
     // 90度（π/2）回転
