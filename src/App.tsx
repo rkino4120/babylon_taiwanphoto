@@ -79,18 +79,19 @@ function App() {
 
     // (AudioEngineV2 removed; using WebAudio + ResonanceAudio for spatial sound)
 
-    // カメラ
+    // カメラ（ブラウザ表示用 - 固定位置、操作無効）
     const camera = new ArcRotateCamera(
       'camera',
       -Math.PI / 2,
       Math.PI / 2.5,
       2,
-      new Vector3(-2, 1.6, 0),
+      new Vector3(0, 1.6, 0), // VRと同じ初期位置
       scene
     );
     // 90度（π/2）回転
     camera.alpha += Math.PI / 2;
-    camera.attachControl(canvasRef.current, true);
+    // ブラウザでのカメラ移動を禁止（VR初期位置を固定するため）
+    // camera.attachControl(canvasRef.current, true); // 無効化
     camera.minZ = 0.1;
 
     // 環境光
@@ -135,7 +136,6 @@ function App() {
     let xrBaseExperience: any = null;
     let xrCamera: any = null;
     let isInXR = false;
-    let savedBrowserCameraState: any = null;
 
     // Loading overlay / progress
     let totalAssets = 0;
@@ -482,6 +482,46 @@ function App() {
     wall2.material = wallMaterial;
     wall2.freezeWorldMatrix();
 
+    // --- GLBファイル読み込み ---
+    const loadGLB = async (filename: string, position: Vector3) => {
+      try {
+        if (scene.isDisposed) return;
+        
+        const { SceneLoader } = await import('@babylonjs/core/Loading/sceneLoader');
+        await import('@babylonjs/loaders/glTF');
+        
+        // eslint-disable-next-line deprecation/deprecation
+        const result = await SceneLoader.LoadAssetContainerAsync('', `glb/${filename}`, scene);
+        
+        if (scene.isDisposed) {
+          result.dispose();
+          return;
+        }
+        
+        result.addAllToScene();
+        
+        if (result.meshes.length > 0) {
+          const root = result.meshes[0];
+          root.position = position;
+          root.scaling = new Vector3(1, 1, 1);
+          console.log(`[GLB] ${filename} loaded successfully`);
+        }
+      } catch (e: any) {
+        // シーン破棄エラーは無視（正常な動作）
+        if (e?.message?.includes('disposed')) {
+          return;
+        }
+        console.error(`[GLB] Failed to load ${filename}:`, e);
+      }
+    };
+    
+    // plant01とplant02を読み込み
+    loadGLB('plant01.glb', new Vector3(1.5, 0, -0.7));
+    loadGLB('plant03.glb', new Vector3(-2.0, 0, -0.6));
+    loadGLB('plant02.glb', new Vector3(-1.5, 0, 0.7));
+    loadGLB('plant04.glb', new Vector3(1.5, 0, 0.75));
+
+
     // BGM は frontPlane 作成後に空間化してアタッチするためここでは作成しない
 
     // frontpage / profilepage を wall2 の前面に上下に配置
@@ -638,6 +678,8 @@ function App() {
       const ctx = texture.getContext() as unknown as CanvasRenderingContext2D;
       const width = baseWidth * TEXT_SCALE;
       const height = baseHeight * TEXT_SCALE; // テクスチャサイズ (scaled)
+      // Vertical adjustment for text content (px, pre-scale). Negative = move up.
+      const CONTENT_Y_OFFSET_PX = -18; // move body/date up slightly
       // try to disable smoothing to reduce blurring where possible
       try { (ctx as any).imageSmoothingEnabled = false; } catch (e) { /* ignore */ }
       try { (ctx as any).webkitImageSmoothingEnabled = false; } catch (e) { /* ignore */ }
@@ -647,7 +689,7 @@ function App() {
       ctx.clearRect(0, 0, width, height);
 
       // タイトル
-      ctx.font = `bold ${24 * TEXT_SCALE}px 'Noto Sans JP', sans-serif`;
+      ctx.font = `bold ${16 * TEXT_SCALE}px 'Noto Sans JP', sans-serif`;
       ctx.fillStyle = "white";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
@@ -659,7 +701,8 @@ function App() {
       // scale layout values to TEXT_SCALE
       const maxLineWidth = 900 * TEXT_SCALE;
       const lineHeight = 30 * TEXT_SCALE;
-      let y = 150 * TEXT_SCALE;
+      // Apply vertical offset to body start
+      let y = (150 + CONTENT_Y_OFFSET_PX) * TEXT_SCALE;
 
       // HTML 内の <br> を改行に変換してからテキストを取り出す
       const tempDiv = document.createElement('div');
@@ -677,7 +720,7 @@ function App() {
         for (let n = 0; n < chars.length; n++) {
           const testLine = line + chars[n];
           const testWidth = ctx.measureText(testLine).width;
-          if (testWidth > maxLineWidth && n > 0) {
+            if (testWidth > maxLineWidth && n > 0) {
             ctx.fillText(line, Math.round(width / 2), Math.round(y));
             line = chars[n];
             y += lineHeight;
@@ -697,10 +740,10 @@ function App() {
         if (y > 320 * TEXT_SCALE) break;
       }
 
-      // 日付（少し上に表示）
+      // 日付（本文と同じオフセットで少し上に表示）
       ctx.font = `${10 * TEXT_SCALE}px 'Noto Sans JP', sans-serif`;
       ctx.fillStyle = "#cccccc";
-      ctx.fillText(date, Math.round(width / 2), Math.round(220 * TEXT_SCALE));
+      ctx.fillText(date, Math.round(width / 2), Math.round((220 + CONTENT_Y_OFFSET_PX) * TEXT_SCALE));
 
       texture.update();
     };
@@ -1091,18 +1134,8 @@ function App() {
           // セッション開始/終了で BGM を制御
           xr.baseExperience.sessionManager.onXRSessionInit.add(() => {
             console.log('XR Session Init: Starting BGM');
-            // save browser camera state and detach controls so ArcRotateCamera doesn't affect XR camera
-            try {
-              savedBrowserCameraState = {
-                alpha: camera.alpha,
-                beta: camera.beta,
-                radius: camera.radius,
-                target: camera.getTarget().clone(),
-              };
-            } catch (e) { savedBrowserCameraState = null; }
-            try { camera.detachControl(); } catch (e) { /* ignore */ }
             isInXR = true;
-            // make sure XR camera has an expected starting position
+            // XR camera を初期位置に設定
             try { if (xrCamera) xrCamera.position = new Vector3(0, 1.6, 0); } catch (e) { /* ignore */ }
             // Ensure the audio context resumes if required, then play
             if (bgmMedia && !bgmPlaying) {
@@ -1120,17 +1153,6 @@ function App() {
                 console.warn('BGM stop failed', e);
               }
             }
-            // restore browser camera state and reattach controls
-            try {
-              if (savedBrowserCameraState) {
-                camera.alpha = savedBrowserCameraState.alpha;
-                camera.beta = savedBrowserCameraState.beta;
-                camera.radius = savedBrowserCameraState.radius;
-                camera.setTarget(savedBrowserCameraState.target);
-                savedBrowserCameraState = null;
-              }
-            } catch (e) { /* ignore */ }
-            try { camera.attachControl(canvasRef.current, true); } catch (e) { /* ignore */ }
             isInXR = false;
           });
         }
