@@ -85,7 +85,7 @@ function App() {
       -Math.PI / 2,
       Math.PI / 2.5,
       2,
-      new Vector3(0, 1.6, 0), // VRと同じ初期位置
+      new Vector3(-1, 1.6, 0), // VRと同じ初期位置
       scene
     );
     // 90度（π/2）回転
@@ -150,10 +150,7 @@ function App() {
 
     const createLoadingOverlay = () => {
       if (loadingOverlay) return;
-      // new loading session: clear previous keys and counters
-      registeredAssetKeys.clear();
-      totalAssets = 0;
-      loadedAssets = 0;
+      // Note: session reset handled by registerAsset when starting a new session
       loadingOverlay = document.createElement('div');
       loadingOverlay.id = 'app-loading-overlay';
       const s = loadingOverlay.style;
@@ -219,14 +216,26 @@ function App() {
     };
 
     const registerAsset = (key?: string) => {
-      // If a key is given, check for dupes
+      // If this is the first asset of a (new) loading session, initialize counters
+      const isNewSession = !loadingOverlay;
+      if (isNewSession) {
+        registeredAssetKeys.clear();
+        totalAssets = 0;
+        loadedAssets = 0;
+      }
+
+      // If a key is given, check for dupes within this session
       if (key) {
         if (registeredAssetKeys.has(key)) {
           // no-op done function for deduped assets
+          // ensure overlay exists for visual continuity
+          createLoadingOverlay();
+          updateLoadingOverlay();
           return () => {};
         }
         registeredAssetKeys.add(key);
       }
+
       totalAssets++;
       // show overlay when first asset is registered
       createLoadingOverlay();
@@ -484,42 +493,54 @@ function App() {
 
     // --- GLBファイル読み込み ---
     const loadGLB = async (filename: string, position: Vector3) => {
+      // registerAsset で読み込みをカウント（重複登録は内部で無視される）
+      const done = registerAsset ? registerAsset(`glb:${filename}`) : () => {};
       try {
-        if (scene.isDisposed) return;
-        
-        const { SceneLoader } = await import('@babylonjs/core/Loading/sceneLoader');
-        await import('@babylonjs/loaders/glTF');
-        
-        // eslint-disable-next-line deprecation/deprecation
-        const result = await SceneLoader.LoadAssetContainerAsync('', `glb/${filename}`, scene);
-        
         if (scene.isDisposed) {
-          result.dispose();
+          done();
           return;
         }
-        
+
+        const { SceneLoader } = await import('@babylonjs/core/Loading/sceneLoader');
+        await import('@babylonjs/loaders/glTF');
+
+        // eslint-disable-next-line deprecation/deprecation
+        const result = await SceneLoader.LoadAssetContainerAsync('', `glb/${filename}`, scene);
+
+        if (scene.isDisposed) {
+          try { result.dispose(); } catch (e) { /* ignore */ }
+          done();
+          return;
+        }
+
         result.addAllToScene();
-        
+
         if (result.meshes.length > 0) {
           const root = result.meshes[0];
           root.position = position;
           root.scaling = new Vector3(1, 1, 1);
           console.log(`[GLB] ${filename} loaded successfully`);
+        } else {
+          console.warn(`[GLB] ${filename} loaded but no meshes found`);
         }
+
+        done();
       } catch (e: any) {
         // シーン破棄エラーは無視（正常な動作）
         if (e?.message?.includes('disposed')) {
+          done();
           return;
         }
         console.error(`[GLB] Failed to load ${filename}:`, e);
+        done();
       }
     };
-    
+
     // plant01とplant02を読み込み
     loadGLB('plant01.glb', new Vector3(1.5, 0, -0.7));
-    loadGLB('plant03.glb', new Vector3(-2.0, 0, -0.6));
-    loadGLB('plant02.glb', new Vector3(-1.5, 0, 0.7));
-    loadGLB('plant04.glb', new Vector3(1.5, 0, 0.75));
+    loadGLB('plant02.glb', new Vector3(-1.0, 0, -0.7));
+    loadGLB('plant02.glb', new Vector3(2.5, 0, 0.7));
+    loadGLB('plant04.glb', new Vector3(-3.2, 0, -0.75));
 
 
     // BGM は frontPlane 作成後に空間化してアタッチするためここでは作成しない
@@ -1127,7 +1148,7 @@ function App() {
         
         if (xr.baseExperience) {
           // 確実に壁の間の中央に配置する
-          xr.baseExperience.camera.position = new Vector3(0, 1.6, 0);
+          xr.baseExperience.camera.position = new Vector3(-1, 1.6, 0);
           xrBaseExperience = xr.baseExperience;
           xrCamera = xrBaseExperience.camera;
 
@@ -1136,7 +1157,7 @@ function App() {
             console.log('XR Session Init: Starting BGM');
             isInXR = true;
             // XR camera を初期位置に設定
-            try { if (xrCamera) xrCamera.position = new Vector3(0, 1.6, 0); } catch (e) { /* ignore */ }
+            try { if (xrCamera) xrCamera.position = new Vector3(-1, 1.6, 0); } catch (e) { /* ignore */ }
             // Ensure the audio context resumes if required, then play
             if (bgmMedia && !bgmPlaying) {
               void toggleBgm();
