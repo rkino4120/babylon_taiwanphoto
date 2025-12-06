@@ -85,7 +85,7 @@ function App() {
       -Math.PI / 2,
       Math.PI / 2.5,
       2,
-      new Vector3(-1, 1.6, 0), // VRと同じ初期位置
+      new Vector3(0, 1.6, 0), // VRと同じ初期位置
       scene
     );
     // 90度（π/2）回転
@@ -1148,7 +1148,7 @@ function App() {
         
         if (xr.baseExperience) {
           // 確実に壁の間の中央に配置する
-          xr.baseExperience.camera.position = new Vector3(-1, 1.6, 0);
+          xr.baseExperience.camera.position = new Vector3(0, 1.6, 0);
           xrBaseExperience = xr.baseExperience;
           xrCamera = xrBaseExperience.camera;
 
@@ -1157,7 +1157,7 @@ function App() {
             console.log('XR Session Init: Starting BGM');
             isInXR = true;
             // XR camera を初期位置に設定
-            try { if (xrCamera) xrCamera.position = new Vector3(-1, 1.6, 0); } catch (e) { /* ignore */ }
+            try { if (xrCamera) xrCamera.position = new Vector3(0, 1.6, 0); } catch (e) { /* ignore */ }
             // Ensure the audio context resumes if required, then play
             if (bgmMedia && !bgmPlaying) {
               void toggleBgm();
