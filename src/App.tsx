@@ -136,6 +136,7 @@ function App() {
     let xrBaseExperience: any = null;
     let xrCamera: any = null;
     let isInXR = false;
+    let xrRecentered = false; // whether we've applied world recentering for XR
 
     // Loading overlay / progress
     let totalAssets = 0;
@@ -461,8 +462,28 @@ function App() {
       arrow2.rotation.z = Math.PI;
       arrow2.material = arrowMat;
       arrow2.isPickable = true;
+      // If we're already in XR, recenter the XR rig so the arrows are centered
+      try { maybeCenterXR(); } catch (e) { /* ignore */ }
     };
     arrowImg.src = 'images/arrow.png';
+
+    // if we are already in XR, ensure the scene is centered between arrows after arrows are created
+    const maybeCenterXR = () => {
+      try {
+        if (!isInXR || !xrBaseExperience || xrRecentered) return;
+        const a1 = scene.getMeshByName('groundArrow1') as Mesh | null;
+        const a2 = scene.getMeshByName('groundArrow2') as Mesh | null;
+        if (!a1 || !a2) return;
+        const p1 = a1.getAbsolutePosition();
+        const p2 = a2.getAbsolutePosition();
+        const centerX = (p1.x + p2.x) / 2;
+        const centerZ = (p1.z + p2.z) / 2;
+        const rigParent = (xrBaseExperience && xrBaseExperience.camera) ? (xrBaseExperience.camera as any).rigParent : null;
+        if (rigParent) {
+          try { rigParent.position = new Vector3(-centerX, 0, -centerZ); xrRecentered = true; console.log('[XR] recentred on arrow center via rigParent', centerX, centerZ);} catch (e) { /* ignore */ }
+        }
+      } catch (e) { /* ignore */ }
+    };
 
     // 壁マテリアル
     const wallMaterial = new StandardMaterial('wallMaterial', scene);
@@ -1172,7 +1193,14 @@ function App() {
               }
 
               if (xrCamera) {
-                xrCamera.position = new Vector3(centerX, 1.6, centerZ);
+                // Adjust the camera rig parent so the user's origin aligns with the arrow midpoint.
+                const rigParent = (xrCamera as any).rigParent || (xrBaseExperience && xrBaseExperience.camera && (xrBaseExperience.camera as any).rigParent);
+                if (rigParent) {
+                  try { rigParent.position = new Vector3(-centerX, 0, -centerZ); xrRecentered = true; } catch (e) { /* ignore */ }
+                } else {
+                  // fallback: set camera position (may not stick in XR)
+                  try { xrCamera.position = new Vector3(centerX, 1.6, centerZ); } catch (e) { /* ignore */ }
+                }
                 // optionally orient camera forward
                 try {
                   if (typeof xrCamera.setTarget === 'function') {
@@ -1186,6 +1214,9 @@ function App() {
               void toggleBgm();
             }
           });
+
+          // apply recenter if arrows were created before XR start
+          maybeCenterXR();
 
           xr.baseExperience.sessionManager.onXRSessionEnded.add(() => {
             console.log('XR Session Ended: Stopping BGM');
