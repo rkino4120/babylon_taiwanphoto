@@ -1157,7 +1157,36 @@ function App() {
             console.log('XR Session Init: Starting BGM');
             isInXR = true;
             // XR camera を初期位置に設定
-            try { if (xrCamera) xrCamera.position = new Vector3(0, 1.6, 0); } catch (e) { /* ignore */ }
+            try {
+              if (xrCamera) {
+                // 一旦カメラ位置を(0,1.6,0)にセット
+                xrCamera.position = new Vector3(0, 1.6, 0);
+
+                // 実際のユーザーの開始位置（トラッキング原点）によって
+                // ビューがずれている場合があるため、シーン全体をカメラの
+                // XY 平面位置の逆方向へオフセットして見かけ上中央に揃える。
+                // これにより VR 内での初期位置が中央に来るよう調整する。
+                try {
+                  const camPos = (xrCamera.position && xrCamera.position.clone) ? xrCamera.position.clone() : null;
+                  if (camPos) {
+                    const dx = camPos.x;
+                    const dz = camPos.z;
+                    if (Math.abs(dx) > 0.001 || Math.abs(dz) > 0.001) {
+                      const offset = new Vector3(-dx, 0, -dz);
+                      scene.meshes.forEach((m) => {
+                        // don't move camera rigs
+                        if (m === (xrCamera as any).rigParent || m.name === 'xr-camera') return;
+                        try { m.position.addInPlace(offset); } catch (e) { /* ignore */ }
+                      });
+                      scene.transformNodes?.forEach?.((t: any) => {
+                        try { if (t.position) t.position.addInPlace(offset); } catch (e) { /* ignore */ }
+                      });
+                      console.log('[XR] Scene recentred by', offset);
+                    }
+                  }
+                } catch (e) { /* ignore */ }
+              }
+            } catch (e) { /* ignore */ }
             // Ensure the audio context resumes if required, then play
             if (bgmMedia && !bgmPlaying) {
               void toggleBgm();
