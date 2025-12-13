@@ -492,9 +492,13 @@ function App() {
         const aspect = iw / ih;
         const targetH = 0.4; // 基準高さ
         const targetW = targetH * aspect;
+        console.log('frontImg.onload:', { iw, ih, aspect, targetW, targetH });
 
         frontMat.diffuseTexture = new Texture('/images/frontpage.jpg', scene);
         try { registerTexture(frontMat.diffuseTexture as Texture, 'images/frontpage.jpg'); } catch (e) { /* ignore */ }
+        try { if ((frontMat.diffuseTexture as any).onLoadObservable && typeof (frontMat.diffuseTexture as any).onLoadObservable.addOnce === 'function') {
+          (frontMat.diffuseTexture as any).onLoadObservable.addOnce(() => console.log('frontMat diffuse texture onLoadObservable fired'));
+        } } catch (e) { /* ignore */ }
         frontMat.emissiveTexture = frontMat.diffuseTexture;
 
         const frontPlane = MeshBuilder.CreatePlane('frontpage', { width: targetW, height: targetH }, scene);
@@ -504,6 +508,10 @@ function App() {
         // frontPlane をクリック可能にして BGM トグルを割り当てる
         frontPlane.isPickable = true;
         frontPlane.doNotSyncBoundingInfo = true;
+        // Ensure plane is enabled and visible
+        try { frontPlane.setEnabled(true); } catch (e) { /* ignore */ }
+        try { frontPlane.isVisible = true; } catch (e) { /* ignore */ }
+        console.log('frontPlane created', { width: targetW, height: targetH });
         // Do not freeze frontPlane world matrix: we need live position updates for spatial audio
         frontMat.freeze();
 
@@ -580,9 +588,13 @@ function App() {
         const aspect = iw / ih;
         const targetH = 0.4;
         const targetW = targetH * aspect;
+        console.log('profileImg.onload:', { iw, ih, aspect, targetW, targetH });
 
         profileMat.diffuseTexture = new Texture('/images/profilepage.jpg', scene);
         try { registerTexture(profileMat.diffuseTexture as Texture, 'images/profilepage.jpg'); } catch (e) { /* ignore */ }
+        try { if ((profileMat.diffuseTexture as any).onLoadObservable && typeof (profileMat.diffuseTexture as any).onLoadObservable.addOnce === 'function') {
+          (profileMat.diffuseTexture as any).onLoadObservable.addOnce(() => console.log('profileMat diffuse texture onLoadObservable fired'));
+        } } catch (e) { /* ignore */ }
         profileMat.emissiveTexture = profileMat.diffuseTexture;
 
         const profilePlane = MeshBuilder.CreatePlane('profilepage', { width: targetW, height: targetH }, scene);
