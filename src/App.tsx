@@ -311,17 +311,6 @@ function App() {
       }
     };
 
-    // registerAudioElement: helper used for HTMLAudioElement-based fallback
-    const registerAudioElement = (el: HTMLAudioElement, key?: string) => {
-      const k = key || el?.src || `audio:${Math.random().toString(36).slice(2)}`;
-      const done = registerAsset(k);
-      const onLoad = () => { done(); cleanup(); };
-      const onError = () => { done(); cleanup(); };
-      const cleanup = () => { el.removeEventListener('canplaythrough', onLoad); el.removeEventListener('error', onError); };
-      el.addEventListener('canplaythrough', onLoad, { once: true } as any);
-      el.addEventListener('error', onError, { once: true } as any);
-    };
-
     // Spatial audio tuning parameters
     const spatialConfig = {
       room: { width: 10, height: 3, depth: 10 },
