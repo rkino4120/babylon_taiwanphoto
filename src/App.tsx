@@ -129,6 +129,8 @@ function App() {
     let bgmSound: Sound | null = null;
     let bgmAudio: HTMLAudioElement | null = null;
     let bgmPlaying = false;
+    let bgmSoundIsFromAudioElement = false;
+    let wasBgmAudioPlayingBeforeXr = false;
     // XR / VR camera handling
     let xrBaseExperience: any = null;
     let xrCamera: any = null;
@@ -372,20 +374,30 @@ function App() {
           bgmPlaying = true;
         } catch (e) {
           console.warn('toggleBgm: play failed, attempting fallback', e);
-          // fallback: try the other backend
-          if (bgmSound && bgmAudio) {
-            try {
-              if (useSpatial && bgmAudio) {
-                await bgmAudio.play();
-                console.log('BGM playing (fallback to HTMLAudioElement)');
-                bgmPlaying = true;
-              } else if (!useSpatial && bgmSound) {
-                await bgmSound.play();
-                console.log('BGM playing (fallback to Babylon Sound)');
-                bgmPlaying = true;
-              }
-            } catch (ee) { console.warn('toggleBgm: fallback play also failed', ee); }
-          }
+          // fallback: try to create / start HTMLAudioElement and attach to Babylon Sound if in XR
+          try {
+            if (!bgmAudio) {
+              const a = new Audio('/sound/bgm.mp3');
+              a.crossOrigin = 'anonymous';
+              a.loop = true;
+              a.volume = 0.5;
+              try { a.load(); } catch (ee) { /* ignore */ }
+              bgmAudio = a;
+            }
+            try { await bgmAudio.play(); bgmPlaying = true; console.log('BGM playing (fallback to HTMLAudioElement)'); } catch (ee) { console.warn('toggleBgm: HTMLAudioElement fallback failed', ee); }
+
+            // If in XR, create a Babylon Sound from the DOM element and attach for spatial audio
+            if (isInXR && bgmAudio && !bgmSound) {
+              try {
+                const domSound = new Sound('bgm', bgmAudio, scene, () => { console.log('[XR] Babylon Sound created from fallback HTMLAudioElement'); }, { loop: true, spatialSound: true, autoplay: false, volume: bgmAudio?.volume ?? 0.5 });
+                bgmSound = domSound;
+                bgmSoundIsFromAudioElement = true;
+                try { const fp = scene.getMeshByName('frontpage'); if (fp) { bgmSound.attachToMesh(fp); console.log('[XR] attached fallback-created bgmSound to frontpage'); } } catch (ex) { /* ignore */ }
+                // Hand off: pause DOM element and start Babylon Sound
+                try { if (!bgmAudio.paused) { bgmAudio.pause(); await bgmSound.play(); console.log('[XR] swapped fallback HTMLAudioElement to Babylon Sound'); } } catch (ex) { console.warn('[XR] failed to handoff fallback to Babylon Sound', ex); }
+              } catch (ex) { console.warn('[XR] failed to create Babylon Sound from fallback HTMLAudioElement', ex); }
+            }
+          } catch (ee) { console.warn('toggleBgm: fallback attempts failed', ee); }
         }
       }
     }; 
@@ -1131,6 +1143,36 @@ function App() {
           xr.baseExperience.sessionManager.onXRSessionInit.add(() => {
             console.log('XR Session Init: Starting BGM');
             isInXR = true;
+
+            // If there is a DOM audio element already playing, create a Babylon Sound from it (spatial)
+            if (!bgmSound && bgmAudio) {
+              try {
+                console.log('[XR] Creating Babylon Sound from existing HTMLAudioElement for spatial audio');
+                const domSound = new Sound('bgm', bgmAudio, scene, () => {
+                  console.log('[XR] Babylon Sound created from HTMLAudioElement');
+                }, { loop: true, spatialSound: true, autoplay: false, volume: bgmAudio?.volume ?? 0.5 });
+                bgmSound = domSound;
+                bgmSoundIsFromAudioElement = true;
+                try {
+                  const fp = scene.getMeshByName('frontpage');
+                  if (fp && bgmSound) { bgmSound.attachToMesh(fp); console.log('[XR] attached bgmSound to frontpage'); }
+                } catch (e) { console.warn('[XR] failed to attach created sound to mesh', e); }
+                // if the DOM audio is currently playing, pause it and start the Babylon Sound so playback remains continuous through the spatializer
+                try {
+                  if (bgmAudio) {
+                    wasBgmAudioPlayingBeforeXr = !bgmAudio.paused;
+                    if (!bgmAudio.paused) {
+                      bgmAudio.pause();
+                      console.log('[XR] paused HTMLAudioElement to hand off playback to Babylon Sound');
+                      try { bgmSound.play(); bgmPlaying = true; console.log('[XR] started Babylon Sound after handoff'); } catch (e) { console.warn('[XR] failed to start Babylon Sound after handoff', e); }
+                    }
+                  }
+                } catch (e) { /* ignore */ }
+              } catch (e) {
+                console.warn('[XR] failed to create Babylon Sound from DOM audio', e);
+              }
+            }
+
             // XR camera を矢印の中間に配置して中央に揃える
             try {
               const arrow1 = scene.getMeshByName('groundArrow1') as Mesh | null;
@@ -1172,16 +1214,30 @@ function App() {
           // apply recenter if arrows were created before XR start
           maybeCenterXR();
 
-          xr.baseExperience.sessionManager.onXRSessionEnded.add(() => {
+          xr.baseExperience.sessionManager.onXRSessionEnded.add(async () => {
             console.log('XR Session Ended: Stopping BGM');
-            if (bgmSound && bgmPlaying) {
-              try {
-                bgmSound.pause();
+            try {
+              if (bgmSound && bgmPlaying) {
+                try {
+                  bgmSound.pause();
+                  console.log('[XR] paused bgmSound');
+                } catch (e) { console.warn('[XR] error pausing bgmSound', e); }
                 bgmPlaying = false;
-              } catch (e) {
-                console.warn('BGM stop failed', e);
               }
-            }
+
+              if (bgmSoundIsFromAudioElement) {
+                // If we created the Babylon Sound from DOM audio in XR, destroy it and restore DOM audio playback if it was playing before XR
+                try {
+                  bgmSound?.dispose();
+                } catch (_) { /* ignore */ }
+                bgmSound = null;
+                bgmSoundIsFromAudioElement = false;
+                if (bgmAudio && wasBgmAudioPlayingBeforeXr) {
+                  try { await bgmAudio.play(); bgmPlaying = true; console.log('[XR] resumed HTMLAudioElement after exiting XR'); } catch (e) { console.warn('[XR] failed to resume HTMLAudioElement after XR', e); }
+                }
+                wasBgmAudioPlayingBeforeXr = false;
+              }
+            } catch (e) { console.warn('XR exit BGM cleanup failed', e); }
             isInXR = false;
           });
         }
