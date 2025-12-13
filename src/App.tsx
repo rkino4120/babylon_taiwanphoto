@@ -1144,27 +1144,65 @@ function App() {
             console.log('XR Session Init: Starting BGM');
             isInXR = true;
 
+            // XRコントローラーのポインター選択機能を有効化
+            if (xr.pointerSelection) {
+              console.log('[XR] pointer selection feature available');
+              
+              // onPointerObservableはXR環境でも動作するため、frontpageのピッキングは既存のハンドラーで処理される
+              // XR用の追加設定は不要
+            }
+
             // register XR select event as a user gesture for audio resume/play
             try {
               const session = (xr.baseExperience && (xr.baseExperience as any).sessionManager && (xr.baseExperience as any).sessionManager.session) || null;
               if (session && typeof session.addEventListener === 'function') {
                 const xrSelectHandler = async (ev: any) => {
                   console.log('[XR] controller select event received', ev);
-                  // Try to resume audio context first
+                  
+                  // XR環境でfrontpageがピックされているかを確認
                   try {
-                    const audioEngine = (scene as any)?.getEngine?.()?.audioEngine;
-                    if (audioEngine && typeof audioEngine.resume === 'function') {
-                      try { await audioEngine.resume(); } catch (e) { /* ignore */ }
-                    } else if ((window as any).audioContext && (window as any).audioContext.state === 'suspended') {
-                      try { await (window as any).audioContext.resume(); } catch (e) { /* ignore */ }
+                    // XRの入力ソースからレイキャストを実行
+                    const inputSources = (session as any).inputSources;
+                    if (inputSources && inputSources.length > 0) {
+                      for (const inputSource of inputSources) {
+                        if (inputSource && inputSource.targetRaySpace) {
+                          // Babylon.jsのXRカメラから現在のピック結果を取得
+                          const xrTestCamera = xrBaseExperience?.camera;
+                          if (xrTestCamera) {
+                            try {
+                              // シーンのピック機能を使用して、現在のレイキャストの結果を取得
+                              const ray = (xrTestCamera as any).getForwardRay?.();
+                              if (ray) {
+                                const pickResult = scene.pickWithRay(ray);
+                                if (pickResult && pickResult.hit && pickResult.pickedMesh) {
+                                  console.log('[XR] picked mesh:', pickResult.pickedMesh.name);
+                                  if (pickResult.pickedMesh.name === 'frontpage') {
+                                    console.log('[XR] frontpage selected, toggling BGM');
+                                    // Try to resume audio context first
+                                    try {
+                                      const audioEngine = (scene as any)?.getEngine?.()?.audioEngine;
+                                      if (audioEngine && typeof audioEngine.resume === 'function') {
+                                        try { await audioEngine.resume(); } catch (e) { /* ignore */ }
+                                      } else if ((window as any).audioContext && (window as any).audioContext.state === 'suspended') {
+                                        try { await (window as any).audioContext.resume(); } catch (e) { /* ignore */ }
+                                      }
+                                    } catch (e) { /* ignore */ }
+                                    
+                                    // Toggle BGM
+                                    await toggleBgm();
+                                  }
+                                }
+                              }
+                            } catch (e) {
+                              console.warn('[XR] ray picking failed', e);
+                            }
+                          }
+                        }
+                      }
                     }
-                  } catch (e) { /* ignore */ }
-
-                  // Toggle BGM on select — if not playing, start; if playing, pause.
-                  try {
-                    // call toggleBgm() directly; since this is in a user gesture, it should allow audio playback
-                    await toggleBgm();
-                  } catch (e) { console.warn('[XR] toggleBgm on select failed', e); }
+                  } catch (e) { 
+                    console.warn('[XR] select event pick check failed', e); 
+                  }
                 };
 
                 session.addEventListener('select', xrSelectHandler);
