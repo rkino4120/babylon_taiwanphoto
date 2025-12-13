@@ -355,8 +355,15 @@ function App() {
           // attempt to resume audio engine/context (some browsers require user interaction)
           try {
             const audioEngine = (scene as any)?.getEngine?.()?.audioEngine;
-            if (audioEngine && typeof audioEngine.resume === 'function') {
-              try { await audioEngine.resume(); } catch (e) { /* ignore */ }
+            if (audioEngine) {
+              // Prefer the v2 API: unlockAsync -> resumeAsync -> (fallback) resume
+              if (typeof (audioEngine as any).unlockAsync === 'function') {
+                try { await (audioEngine as any).unlockAsync(); } catch (e) { /* ignore */ }
+              } else if (typeof (audioEngine as any).resumeAsync === 'function') {
+                try { await (audioEngine as any).resumeAsync(); } catch (e) { /* ignore */ }
+              } else if (typeof (audioEngine as any).resume === 'function') {
+                try { await (audioEngine as any).resume(); } catch (e) { /* ignore */ }
+              }
             } else if ((window as any).audioContext && (window as any).audioContext.state === 'suspended') {
               try { await (window as any).audioContext.resume(); } catch (e) { /* ignore */ }
             }
@@ -568,10 +575,17 @@ function App() {
 
         // ポインタ（クリック / コントローラ選択）を監視して frontPlane をクリックしたらトグル
         scene.onPointerObservable.add((pi) => {
-          if (pi.type !== PointerEventTypes.POINTERUP) return;
+          if (pi.type !== PointerEventTypes.POINTERDOWN) return;
           const pickInfo = pi.pickInfo;
-          if (pickInfo && pickInfo.hit && pickInfo.pickedMesh === frontPlane) {
-            toggleBgm();
+          if (pickInfo && pickInfo.hit && pickInfo.pickedMesh) {
+            try {
+              const pickedName = (pickInfo.pickedMesh && pickInfo.pickedMesh.name) ? pickInfo.pickedMesh.name : null;
+              console.log('[pointer] picked mesh:', pickedName);
+              if (pickedName === 'frontpage') {
+                console.log('[pointer] frontpage selected; isInXR=', isInXR, 'bgmSound?', !!bgmSound, 'bgmAudio?', !!bgmAudio, 'bgmPlaying?', bgmPlaying);
+                toggleBgm();
+              }
+            } catch (e) { /* ignore */ }
           }
         });
 
@@ -1141,77 +1155,13 @@ function App() {
 
           // セッション開始/終了で BGM を制御
           xr.baseExperience.sessionManager.onXRSessionInit.add(() => {
-            console.log('XR Session Init: Starting BGM');
+            console.log('XR Session Init');
             isInXR = true;
 
-            // XRコントローラーのポインター選択機能を有効化
-            if (xr.pointerSelection) {
-              console.log('[XR] pointer selection feature available');
-              
-              // onPointerObservableはXR環境でも動作するため、frontpageのピッキングは既存のハンドラーで処理される
-              // XR用の追加設定は不要
-            }
-
-            // register XR select event as a user gesture for audio resume/play
-            try {
-              const session = (xr.baseExperience && (xr.baseExperience as any).sessionManager && (xr.baseExperience as any).sessionManager.session) || null;
-              if (session && typeof session.addEventListener === 'function') {
-                const xrSelectHandler = async (ev: any) => {
-                  console.log('[XR] controller select event received', ev);
-                  
-                  // XR環境でfrontpageがピックされているかを確認
-                  try {
-                    // XRの入力ソースからレイキャストを実行
-                    const inputSources = (session as any).inputSources;
-                    if (inputSources && inputSources.length > 0) {
-                      for (const inputSource of inputSources) {
-                        if (inputSource && inputSource.targetRaySpace) {
-                          // Babylon.jsのXRカメラから現在のピック結果を取得
-                          const xrTestCamera = xrBaseExperience?.camera;
-                          if (xrTestCamera) {
-                            try {
-                              // シーンのピック機能を使用して、現在のレイキャストの結果を取得
-                              const ray = (xrTestCamera as any).getForwardRay?.();
-                              if (ray) {
-                                const pickResult = scene.pickWithRay(ray);
-                                if (pickResult && pickResult.hit && pickResult.pickedMesh) {
-                                  console.log('[XR] picked mesh:', pickResult.pickedMesh.name);
-                                  if (pickResult.pickedMesh.name === 'frontpage') {
-                                    console.log('[XR] frontpage selected, toggling BGM');
-                                    // Try to resume audio context first
-                                    try {
-                                      const audioEngine = (scene as any)?.getEngine?.()?.audioEngine;
-                                      if (audioEngine && typeof audioEngine.resume === 'function') {
-                                        try { await audioEngine.resume(); } catch (e) { /* ignore */ }
-                                      } else if ((window as any).audioContext && (window as any).audioContext.state === 'suspended') {
-                                        try { await (window as any).audioContext.resume(); } catch (e) { /* ignore */ }
-                                      }
-                                    } catch (e) { /* ignore */ }
-                                    
-                                    // Toggle BGM
-                                    await toggleBgm();
-                                  }
-                                }
-                              }
-                            } catch (e) {
-                              console.warn('[XR] ray picking failed', e);
-                            }
-                          }
-                        }
-                      }
-                    }
-                  } catch (e) { 
-                    console.warn('[XR] select event pick check failed', e); 
-                  }
-                };
-
-                session.addEventListener('select', xrSelectHandler);
-
-                // store handler reference for removal on session end
-                (session as any).__xrSelectHandler = xrSelectHandler;
-                console.log('[XR] registered select handler on session');
-              }
-            } catch (e) { console.warn('[XR] failed to register select handler', e); }
+            // XRコントローラーのポインター選択機能を確認・設定
+            // scene.onPointerObservableはXR環境でも動作するため、
+            // 既存のfrontpage用ハンドラーで処理される
+            console.log('[XR] VR mode enabled - scene.onPointerObservable should handle frontpage picks');
 
             // If there is a DOM audio element already playing, create a Babylon Sound from it (spatial)
             if (!bgmSound && bgmAudio) {
@@ -1284,17 +1234,8 @@ function App() {
           maybeCenterXR();
 
           xr.baseExperience.sessionManager.onXRSessionEnded.add(async () => {
-            console.log('XR Session Ended: Stopping BGM');
+            console.log('XR Session Ended');
             try {
-              // Remove the select handler if we previously added it on session
-              try {
-                const session = (xr.baseExperience && (xr.baseExperience as any).sessionManager && (xr.baseExperience as any).sessionManager.session) || null;
-                if (session && (session as any).__xrSelectHandler) {
-                  try { session.removeEventListener('select', (session as any).__xrSelectHandler); } catch (e) { /* ignore */ }
-                  (session as any).__xrSelectHandler = null;
-                  console.log('[XR] removed select handler from session');
-                }
-              } catch (e) { /* ignore */ }
               if (bgmSound && bgmPlaying) {
                 try {
                   bgmSound.pause();
