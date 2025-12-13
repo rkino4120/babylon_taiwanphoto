@@ -1144,6 +1144,37 @@ function App() {
             console.log('XR Session Init: Starting BGM');
             isInXR = true;
 
+            // register XR select event as a user gesture for audio resume/play
+            try {
+              const session = (xr.baseExperience && (xr.baseExperience as any).sessionManager && (xr.baseExperience as any).sessionManager.session) || null;
+              if (session && typeof session.addEventListener === 'function') {
+                const xrSelectHandler = async (ev: any) => {
+                  console.log('[XR] controller select event received', ev);
+                  // Try to resume audio context first
+                  try {
+                    const audioEngine = (scene as any)?.getEngine?.()?.audioEngine;
+                    if (audioEngine && typeof audioEngine.resume === 'function') {
+                      try { await audioEngine.resume(); } catch (e) { /* ignore */ }
+                    } else if ((window as any).audioContext && (window as any).audioContext.state === 'suspended') {
+                      try { await (window as any).audioContext.resume(); } catch (e) { /* ignore */ }
+                    }
+                  } catch (e) { /* ignore */ }
+
+                  // Toggle BGM on select — if not playing, start; if playing, pause.
+                  try {
+                    // call toggleBgm() directly; since this is in a user gesture, it should allow audio playback
+                    await toggleBgm();
+                  } catch (e) { console.warn('[XR] toggleBgm on select failed', e); }
+                };
+
+                session.addEventListener('select', xrSelectHandler);
+
+                // store handler reference for removal on session end
+                (session as any).__xrSelectHandler = xrSelectHandler;
+                console.log('[XR] registered select handler on session');
+              }
+            } catch (e) { console.warn('[XR] failed to register select handler', e); }
+
             // If there is a DOM audio element already playing, create a Babylon Sound from it (spatial)
             if (!bgmSound && bgmAudio) {
               try {
@@ -1217,6 +1248,15 @@ function App() {
           xr.baseExperience.sessionManager.onXRSessionEnded.add(async () => {
             console.log('XR Session Ended: Stopping BGM');
             try {
+              // Remove the select handler if we previously added it on session
+              try {
+                const session = (xr.baseExperience && (xr.baseExperience as any).sessionManager && (xr.baseExperience as any).sessionManager.session) || null;
+                if (session && (session as any).__xrSelectHandler) {
+                  try { session.removeEventListener('select', (session as any).__xrSelectHandler); } catch (e) { /* ignore */ }
+                  (session as any).__xrSelectHandler = null;
+                  console.log('[XR] removed select handler from session');
+                }
+              } catch (e) { /* ignore */ }
               if (bgmSound && bgmPlaying) {
                 try {
                   bgmSound.pause();
