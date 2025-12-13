@@ -328,21 +328,23 @@ function App() {
     // initAudioEngine not required; Babylon Sound creates and manages audio context
 
     const toggleBgm = async () => {
+      console.log('[toggleBgm] called; isInXR=', isInXR, 'bgmSound?', !!bgmSound, 'bgmAudio?', !!bgmAudio, 'bgmPlaying?', bgmPlaying);
       if (!bgmSound && !bgmAudio) {
         console.log('toggleBgm: BGM not ready');
         return;
       }
 
-      // Decide which backend to use: prefer non-spatial audio (bgmAudio) on desktop/non-XR
+      // Decide which backend to use: prefer spatial audio (bgmSound) in XR
       const useSpatial = !!(isInXR && bgmSound); // if in XR and bgmSound exists, use spatial
+      console.log('[toggleBgm] useSpatial=', useSpatial);
 
       if (bgmPlaying) {
         try {
           if (useSpatial && bgmSound) {
-            try { bgmSound.pause(); } catch (e) { /* ignore */ }
+            try { bgmSound.pause(); } catch (e) { console.warn('bgmSound.pause failed', e); }
             console.log('BGM paused (Babylon Sound)');
           } else if (bgmAudio) {
-            try { bgmAudio.pause(); } catch (e) { /* ignore */ }
+            try { bgmAudio.pause(); } catch (e) { console.warn('bgmAudio.pause failed', e); }
             console.log('BGM paused (HTMLAudioElement)');
           }
           bgmPlaying = false;
@@ -355,28 +357,41 @@ function App() {
           // attempt to resume audio engine/context (some browsers require user interaction)
           try {
             const audioEngine = (scene as any)?.getEngine?.()?.audioEngine;
+            console.log('[toggleBgm] audioEngine:', audioEngine?.state ?? audioEngine);
             if (audioEngine) {
               // Prefer the v2 API: unlockAsync -> resumeAsync -> (fallback) resume
               if (typeof (audioEngine as any).unlockAsync === 'function') {
-                try { await (audioEngine as any).unlockAsync(); } catch (e) { /* ignore */ }
+                try { await (audioEngine as any).unlockAsync(); console.log('[toggleBgm] audioEngine.unlockAsync succeeded'); } catch (e) { console.warn('[toggleBgm] audioEngine.unlockAsync failed', e); }
               } else if (typeof (audioEngine as any).resumeAsync === 'function') {
-                try { await (audioEngine as any).resumeAsync(); } catch (e) { /* ignore */ }
+                try { await (audioEngine as any).resumeAsync(); console.log('[toggleBgm] audioEngine.resumeAsync succeeded'); } catch (e) { console.warn('[toggleBgm] audioEngine.resumeAsync failed', e); }
               } else if (typeof (audioEngine as any).resume === 'function') {
-                try { await (audioEngine as any).resume(); } catch (e) { /* ignore */ }
+                try { await (audioEngine as any).resume(); console.log('[toggleBgm] audioEngine.resume succeeded'); } catch (e) { console.warn('[toggleBgm] audioEngine.resume failed', e); }
               }
             } else if ((window as any).audioContext && (window as any).audioContext.state === 'suspended') {
-              try { await (window as any).audioContext.resume(); } catch (e) { /* ignore */ }
+              try { await (window as any).audioContext.resume(); console.log('[toggleBgm] window.audioContext.resume succeeded'); } catch (e) { console.warn('[toggleBgm] window.audioContext.resume failed', e); }
             }
-          } catch (ee) { /* ignore */ }
+          } catch (ee) { console.warn('[toggleBgm] audio engine resume attempt failed', ee); }
+
+          // If in XR and we have a DOM audio but no bgmSound, create a Babylon Sound from it first
+          if (isInXR && bgmAudio && !bgmSound) {
+            try {
+              console.log('[toggleBgm] creating Babylon Sound from existing HTMLAudioElement for XR');
+              const domSound = new Sound('bgm', bgmAudio, scene, () => { console.log('[toggleBgm] bgmSound created from DOM audio'); }, { loop: true, spatialSound: true, autoplay: false, volume: bgmAudio?.volume ?? 0.5 });
+              bgmSound = domSound;
+              bgmSoundIsFromAudioElement = true;
+              try { const fp = scene.getMeshByName('frontpage'); if (fp) { bgmSound.attachToMesh(fp); console.log('[toggleBgm] attached created bgmSound to frontpage'); } }
+              catch (ex) { console.warn('[toggleBgm] attach to frontpage failed', ex); }
+            } catch (ex) { console.warn('[toggleBgm] failed to create bgmSound from DOM audio during toggle', ex); }
+          }
 
           if (useSpatial && bgmSound) {
             console.log('toggleBgm: attempting Babylon Sound play');
-            await bgmSound.play();
-            console.log('BGM playing (Babylon Sound)');
+            try { await bgmSound.play(); console.log('BGM playing (Babylon Sound)'); }
+            catch (e) { console.warn('bgmSound.play error', e); throw e; }
           } else if (bgmAudio) {
             console.log('toggleBgm: attempting HTMLAudioElement play');
-            try { await bgmAudio.play(); } catch (e) { console.warn('bgmAudio.play() error', e); throw e; }
-            console.log('BGM playing (HTMLAudioElement)');
+            try { await bgmAudio.play(); console.log('BGM playing (HTMLAudioElement)'); }
+            catch (e) { console.warn('bgmAudio.play() error', e); throw e; }
           }
           bgmPlaying = true;
         } catch (e) {
@@ -399,7 +414,7 @@ function App() {
                 const domSound = new Sound('bgm', bgmAudio, scene, () => { console.log('[XR] Babylon Sound created from fallback HTMLAudioElement'); }, { loop: true, spatialSound: true, autoplay: false, volume: bgmAudio?.volume ?? 0.5 });
                 bgmSound = domSound;
                 bgmSoundIsFromAudioElement = true;
-                try { const fp = scene.getMeshByName('frontpage'); if (fp) { bgmSound.attachToMesh(fp); console.log('[XR] attached fallback-created bgmSound to frontpage'); } } catch (ex) { /* ignore */ }
+                try { const fp = scene.getMeshByName('frontpage'); if (fp) { bgmSound.attachToMesh(fp); console.log('[XR] attached fallback-created bgmSound to frontpage'); } } catch (ex) { console.warn('[XR] attach to frontpage failed', ex); }
                 // Hand off: pause DOM element and start Babylon Sound
                 try { if (!bgmAudio.paused) { bgmAudio.pause(); await bgmSound.play(); console.log('[XR] swapped fallback HTMLAudioElement to Babylon Sound'); } } catch (ex) { console.warn('[XR] failed to handoff fallback to Babylon Sound', ex); }
               } catch (ex) { console.warn('[XR] failed to create Babylon Sound from fallback HTMLAudioElement', ex); }
@@ -852,6 +867,8 @@ function App() {
         whiteFrameMat.emissiveColor = new Color3(1, 1, 1);
         whiteFrameMat.freeze();
         whiteFramePlane.material = whiteFrameMat;
+        // Frames should not be pickable to allow clicking the photo behind
+        whiteFramePlane.isPickable = false;
 
         // Black frame
         // Keep slightly thinner than the white frame for the inner border
@@ -865,6 +882,7 @@ function App() {
         blackFrameMat.emissiveColor = new Color3(0, 0, 0);
         blackFrameMat.freeze();
         blackFramePlane.material = blackFrameMat;
+        blackFramePlane.isPickable = false;
 
         // Text Plane
         const textW = 1.5;
@@ -877,6 +895,8 @@ function App() {
         const textzPos = zPos - (textOffset * (index < 2 ? -1 : 1));
         textPlane.position = new Vector3(xOffset, textY, textzPos);
         textPlane.rotation.y = rotY;
+        // Text plane is usually overlay and can block clicks; disable pick
+        textPlane.isPickable = false;
 
         // DynamicTextureでテキストを作成 (2x for crisper text)
         // use global TEXT_SCALE
@@ -1154,9 +1174,23 @@ function App() {
           xrCamera = xrBaseExperience.camera;
 
           // セッション開始/終了で BGM を制御
-          xr.baseExperience.sessionManager.onXRSessionInit.add(() => {
+          xr.baseExperience.sessionManager.onXRSessionInit.add(async () => {
             console.log('XR Session Init');
             isInXR = true;
+
+            // Try to unlock/resume the audio engine early to allow sound playback in XR
+            try {
+              const audioEngine = (scene as any)?.getEngine?.()?.audioEngine;
+              if (audioEngine) {
+                if (typeof (audioEngine as any).unlockAsync === 'function') {
+                  try { await (audioEngine as any).unlockAsync(); console.log('[XR] audioEngine.unlockAsync succeeded'); } catch (e) { console.warn('[XR] audioEngine.unlockAsync failed', e); }
+                } else if (typeof (audioEngine as any).resumeAsync === 'function') {
+                  try { await (audioEngine as any).resumeAsync(); console.log('[XR] audioEngine.resumeAsync succeeded'); } catch (e) { console.warn('[XR] audioEngine.resumeAsync failed', e); }
+                } else if (typeof (audioEngine as any).resume === 'function') {
+                  try { await (audioEngine as any).resume(); console.log('[XR] audioEngine.resume succeeded'); } catch (e) { console.warn('[XR] audioEngine.resume failed', e); }
+                }
+              }
+            } catch (e) { console.warn('[XR] audio engine unlock/resume failed', e); }
 
             // XRコントローラーのポインター選択機能を確認・設定
             // scene.onPointerObservableはXR環境でも動作するため、
@@ -1172,21 +1206,24 @@ function App() {
                 }, { loop: true, spatialSound: true, autoplay: false, volume: bgmAudio?.volume ?? 0.5 });
                 bgmSound = domSound;
                 bgmSoundIsFromAudioElement = true;
+                console.log('[XR] bgmSound created; attaching to frontpage if present');
                 try {
                   const fp = scene.getMeshByName('frontpage');
                   if (fp && bgmSound) { bgmSound.attachToMesh(fp); console.log('[XR] attached bgmSound to frontpage'); }
+                  else { console.warn('[XR] frontpage not found to attach bgmSound'); }
                 } catch (e) { console.warn('[XR] failed to attach created sound to mesh', e); }
                 // if the DOM audio is currently playing, pause it and start the Babylon Sound so playback remains continuous through the spatializer
                 try {
                   if (bgmAudio) {
                     wasBgmAudioPlayingBeforeXr = !bgmAudio.paused;
+                    console.log('[XR] wasBgmAudioPlayingBeforeXr=', wasBgmAudioPlayingBeforeXr);
                     if (!bgmAudio.paused) {
                       bgmAudio.pause();
                       console.log('[XR] paused HTMLAudioElement to hand off playback to Babylon Sound');
                       try { bgmSound.play(); bgmPlaying = true; console.log('[XR] started Babylon Sound after handoff'); } catch (e) { console.warn('[XR] failed to start Babylon Sound after handoff', e); }
                     }
                   }
-                } catch (e) { /* ignore */ }
+                } catch (e) { console.warn('[XR] error during DOM->Babylon sound handoff', e); }
               } catch (e) {
                 console.warn('[XR] failed to create Babylon Sound from DOM audio', e);
               }
