@@ -330,25 +330,62 @@ function App() {
         console.log('toggleBgm: BGM not ready');
         return;
       }
-      // AudioContext resume is handled by Babylon and the browser; continue
+
+      // Decide which backend to use: prefer non-spatial audio (bgmAudio) on desktop/non-XR
+      const useSpatial = !!(isInXR && bgmSound); // if in XR and bgmSound exists, use spatial
 
       if (bgmPlaying) {
         try {
-          if (bgmSound) { bgmSound.pause(); }
-          else if (bgmAudio) { bgmAudio.pause(); }
+          if (useSpatial && bgmSound) {
+            try { bgmSound.pause(); } catch (e) { /* ignore */ }
+            console.log('BGM paused (Babylon Sound)');
+          } else if (bgmAudio) {
+            try { bgmAudio.pause(); } catch (e) { /* ignore */ }
+            console.log('BGM paused (HTMLAudioElement)');
+          }
           bgmPlaying = false;
-          console.log('BGM paused');
+          console.log('BGM paused overall');
         } catch (e) {
           console.warn('toggleBgm: pause failed', e);
         }
       } else {
         try {
-          if (bgmSound) { await bgmSound.play(); }
-          else if (bgmAudio) { await bgmAudio.play(); }
+          // attempt to resume audio engine/context (some browsers require user interaction)
+          try {
+            const audioEngine = (scene as any)?.getEngine?.()?.audioEngine;
+            if (audioEngine && typeof audioEngine.resume === 'function') {
+              try { await audioEngine.resume(); } catch (e) { /* ignore */ }
+            } else if ((window as any).audioContext && (window as any).audioContext.state === 'suspended') {
+              try { await (window as any).audioContext.resume(); } catch (e) { /* ignore */ }
+            }
+          } catch (ee) { /* ignore */ }
+
+          if (useSpatial && bgmSound) {
+            console.log('toggleBgm: attempting Babylon Sound play');
+            await bgmSound.play();
+            console.log('BGM playing (Babylon Sound)');
+          } else if (bgmAudio) {
+            console.log('toggleBgm: attempting HTMLAudioElement play');
+            try { await bgmAudio.play(); } catch (e) { console.warn('bgmAudio.play() error', e); throw e; }
+            console.log('BGM playing (HTMLAudioElement)');
+          }
           bgmPlaying = true;
-          console.log('BGM playing');
         } catch (e) {
-          console.warn('toggleBgm: play failed', e);
+          console.warn('toggleBgm: play failed, attempting fallback', e);
+          // fallback: try the other backend
+          if (bgmSound && bgmAudio) {
+            try {
+              if (useSpatial && bgmAudio) {
+                await bgmAudio.play();
+                console.log('BGM playing (fallback to HTMLAudioElement)');
+                bgmPlaying = true;
+              } else if (!useSpatial && bgmSound) {
+                await bgmSound.play();
+                console.log('BGM playing (fallback to Babylon Sound)');
+                bgmPlaying = true;
+              }
+            } catch (ee) { console.warn('toggleBgm: fallback play also failed', ee); }
+          }
         }
       }
     }; 
@@ -512,6 +549,8 @@ function App() {
         try { frontPlane.setEnabled(true); } catch (e) { /* ignore */ }
         try { frontPlane.isVisible = true; } catch (e) { /* ignore */ }
         console.log('frontPlane created', { width: targetW, height: targetH });
+        try { console.log('frontPlane info', { position: frontPlane.position, isEnabled: frontPlane.isEnabled(), isVisible: (frontPlane as any).isVisible ?? true, absolute: frontPlane.getAbsolutePosition(), materialHasEmissive: !!frontMat.emissiveTexture, emissiveReady: (frontMat.emissiveTexture as any)?.isReady, diffuseReady: (frontMat.diffuseTexture as any)?.isReady }); } catch (e) { console.warn('frontPlane info read failed', e); }
+        try { console.log('scene meshes contains frontpage:', !!scene.getMeshByName('frontpage')); } catch (e) { /* ignore */ }
         // Do not freeze frontPlane world matrix: we need live position updates for spatial audio
         frontMat.freeze();
 
@@ -535,6 +574,17 @@ function App() {
               try { done(); } catch (e) { /* ignore */ }
               soundLoaded = true;
               console.log('BGM loaded (Babylon Sound)');
+              // ensure HTMLAudioElement fallback is ready for reliable user-initiated playback
+              try {
+                if (!bgmAudio) {
+                  const _audioEl = new Audio('/sound/bgm.mp3');
+                  _audioEl.crossOrigin = 'anonymous';
+                  _audioEl.loop = true;
+                  _audioEl.volume = 0.5;
+                  try { _audioEl.load(); } catch (e) { /* ignore */ }
+                  bgmAudio = _audioEl;
+                }
+              } catch (e) { /* ignore */ }
             }, { loop: true, spatialSound: true, autoplay: false, volume: 0.5 });
             // attach to mesh so it moves with it and becomes a positional source
             try { bgmSound.attachToMesh(frontPlane); } catch (e) { /* ignore */ }
@@ -548,11 +598,14 @@ function App() {
                 try { done(); } catch (e) { /* ignore */ }
                 try { if (bgmSound) { bgmSound.dispose(); bgmSound = null; } } catch (e) { /* ignore */ }
                 // Note: don't use registerAudioElement here as we already called done() above
-                const audioEl = new Audio('/sound/bgm.mp3');
-                audioEl.crossOrigin = 'anonymous';
-                audioEl.loop = true;
-                audioEl.volume = 0.5;
-                bgmAudio = audioEl; // store fallback audio for toggle access 
+                if (!bgmAudio) {
+                  const audioEl = new Audio('/sound/bgm.mp3');
+                  audioEl.crossOrigin = 'anonymous';
+                  audioEl.loop = true;
+                  audioEl.volume = 0.5;
+                  try { audioEl.load(); } catch (e) { /* ignore */ }
+                  bgmAudio = audioEl; // store fallback audio for toggle access 
+                }
               }
             }, 7000); // 7s fallback
           } catch (e) {
@@ -574,6 +627,7 @@ function App() {
           bgmSound = null;
         }
       };
+      frontImg.onerror = (ev) => { console.error('frontImg.onerror', ev, frontImg.src); };
       frontImg.src = '/images/frontpage.jpg';
 
       // profilepage: 同上（下側）
@@ -606,6 +660,7 @@ function App() {
         profilePlane.freezeWorldMatrix();
         profileMat.freeze();
       };
+      profileImg.onerror = (ev) => { console.error('profileImg.onerror', ev, profileImg.src); };
       profileImg.src = '/images/profilepage.jpg';
 
     // --- ヘルパー: テキスト描画 ---
