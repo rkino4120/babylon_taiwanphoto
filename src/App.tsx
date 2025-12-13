@@ -143,6 +143,20 @@ function App() {
     let bgm: StaticSound | null = null;
     let bgmPlaying = false;
 
+    // XR state
+    let xrExperience: any = null;
+    let isInXR = false;
+
+    // XR movement bounds (world coords)
+    const XR_BOUNDS = { minX: -4.5, maxX: 4.5, minZ: -0.85, maxZ: 0.85 };
+    const clampXRPosition = (pos: Vector3) => {
+      if (!pos) return pos;
+      const x = Math.max(XR_BOUNDS.minX, Math.min(XR_BOUNDS.maxX, pos.x));
+      const y = pos.y;
+      const z = Math.max(XR_BOUNDS.minZ, Math.min(XR_BOUNDS.maxZ, pos.z));
+      return new Vector3(x, y, z);
+    };
+
     // BGM 再生/一時停止トグル
     const toggleBgm = async () => {
       if (!bgm) {
@@ -784,6 +798,7 @@ function App() {
             sessionMode: 'immersive-vr',
           },
         });
+        xrExperience = xr;
         
         if (xr.baseExperience) {
           // 確実に壁の間の中央に配置する
@@ -792,6 +807,7 @@ function App() {
           // セッション開始/終了で BGM を制御
           xr.baseExperience.sessionManager.onXRSessionInit.add(() => {
             console.log('XR Session Init: Starting BGM');
+            isInXR = true;
             console.log('Audio listener position:', audioEngine?.listener.position);
             console.log('Audio listener attached:', audioEngine?.listener.isAttached);
             if (bgm && !bgmPlaying) {
@@ -807,6 +823,7 @@ function App() {
 
           xr.baseExperience.sessionManager.onXRSessionEnded.add(() => {
             console.log('XR Session Ended: Stopping BGM');
+            isInXR = false;
             if (bgm) {
               try {
                 bgm.stop();
@@ -822,6 +839,25 @@ function App() {
       }
     };
     createXR();
+
+    // Clamp XR movement to bounds each frame
+    scene.onBeforeRenderObservable.add(() => {
+      try {
+        if (!isInXR || !xrExperience || !xrExperience.baseExperience) return;
+        const cam = xrExperience.baseExperience.camera;
+        if (!cam) return;
+        const rigParent = (cam as any).rigParent || cam;
+        if (!rigParent) return;
+        const pos = rigParent.position;
+        const clamped = clampXRPosition(pos);
+        if (clamped.x !== pos.x || clamped.z !== pos.z) {
+          const prevX = pos.x; const prevZ = pos.z;
+          // Apply clamped X/Z; leave Y untouched
+          try { rigParent.position.x = clamped.x; rigParent.position.z = clamped.z; } catch (e) { /* ignore */ }
+          try { console.log('[XR] clamped rigParent position from', prevX, prevZ, 'to', clamped.x, clamped.z); } catch (e) { /* ignore */ }
+        }
+      } catch (e) { /* ignore */ }
+    });
 
     // ループ
     engine.runRenderLoop(() => {
