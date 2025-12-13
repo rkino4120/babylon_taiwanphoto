@@ -127,6 +127,7 @@ function App() {
     let slideQueue: Promise<void> = Promise.resolve();
     // BGM 用（Babylon Sound）
     let bgmSound: Sound | null = null;
+    let bgmAudio: HTMLAudioElement | null = null;
     let bgmPlaying = false;
     // XR / VR camera handling
     let xrBaseExperience: any = null;
@@ -325,7 +326,7 @@ function App() {
     // initAudioEngine not required; Babylon Sound creates and manages audio context
 
     const toggleBgm = async () => {
-      if (!bgmSound) {
+      if (!bgmSound && !bgmAudio) {
         console.log('toggleBgm: BGM not ready');
         return;
       }
@@ -333,32 +334,34 @@ function App() {
 
       if (bgmPlaying) {
         try {
-          bgmSound.pause();
+          if (bgmSound) { bgmSound.pause(); }
+          else if (bgmAudio) { bgmAudio.pause(); }
           bgmPlaying = false;
-          console.log('BGM paused (Babylon Sound)');
+          console.log('BGM paused');
         } catch (e) {
           console.warn('toggleBgm: pause failed', e);
         }
       } else {
         try {
-          bgmSound.play();
+          if (bgmSound) { await bgmSound.play(); }
+          else if (bgmAudio) { await bgmAudio.play(); }
           bgmPlaying = true;
-          console.log('BGM playing (Babylon Sound)');
+          console.log('BGM playing');
         } catch (e) {
           console.warn('toggleBgm: play failed', e);
         }
       }
-    };
+    }; 
 
     // --- 床・壁の作成 ---
     const ground = MeshBuilder.CreateGround('ground', { width: 10, height: 10 }, scene);
     const groundMaterial = new StandardMaterial('groundMaterial', scene);
-    const diffuseTexture = new Texture('images/concrete_floor_worn_001_diff_1k.jpg', scene);
+    const diffuseTexture = new Texture('/images/concrete_floor_worn_001_diff_1k.jpg', scene);
     try { registerTexture(diffuseTexture, 'images/concrete_floor_worn_001_diff_1k.jpg'); } catch (e) { /* ignore */ }
     diffuseTexture.uScale = 5;
     diffuseTexture.vScale = 5;
     groundMaterial.diffuseTexture = diffuseTexture;
-    const bumpTexture = new Texture('images/concrete_floor_worn_001_nor_gl_1k.png', scene);
+    const bumpTexture = new Texture('/images/concrete_floor_worn_001_nor_gl_1k.png', scene);
     try { registerTexture(bumpTexture, 'images/concrete_floor_worn_001_nor_gl_1k.png'); } catch (e) { /* ignore */ }
     bumpTexture.uScale = 5;
     bumpTexture.vScale = 5;
@@ -372,7 +375,7 @@ function App() {
     ground.freezeWorldMatrix(); // 静的メッシュのワールド行列を固定
 
     // 矢印ボタン
-    const arrowTex = new Texture('images/arrow.png', scene);
+    const arrowTex = new Texture('/images/arrow.png', scene);
     try { registerTexture(arrowTex, 'images/arrow.png'); } catch (e) { /* ignore */ }
     arrowTex.hasAlpha = true;
     const arrowMat = new StandardMaterial('arrowMat', scene);
@@ -415,7 +418,7 @@ function App() {
       // If we're already in XR, recenter the XR rig so the arrows are centered
       try { maybeCenterXR(); } catch (e) { /* ignore */ }
     };
-    arrowImg.src = 'images/arrow.png';
+    arrowImg.src = '/images/arrow.png';
 
     // if we are already in XR, ensure the scene is centered between arrows after arrows are created
     const maybeCenterXR = () => {
@@ -438,12 +441,12 @@ function App() {
     // 壁マテリアル
     const wallMaterial = new StandardMaterial('wallMaterial', scene);
     wallMaterial.backFaceCulling = false;
-    const wallDiffuseTexture = new Texture('images/painted_plaster_wall_diff_1k.jpg', scene);
+    const wallDiffuseTexture = new Texture('/images/painted_plaster_wall_diff_1k.jpg', scene);
     try { registerTexture(wallDiffuseTexture, 'images/painted_plaster_wall_diff_1k.jpg'); } catch (e) { /* ignore */ }
     wallDiffuseTexture.uScale = 5;
     wallDiffuseTexture.vScale = 2;
     wallMaterial.diffuseTexture = wallDiffuseTexture;
-    const wallBumpTexture = new Texture('images/painted_plaster_wall_nor_gl_1k.png', scene);
+    const wallBumpTexture = new Texture('/images/painted_plaster_wall_nor_gl_1k.png', scene);
     try { registerTexture(wallBumpTexture, 'images/painted_plaster_wall_nor_gl_1k.png'); } catch (e) { /* ignore */ }
     wallBumpTexture.uScale = 5;
     wallBumpTexture.vScale = 2;
@@ -490,7 +493,7 @@ function App() {
         const targetH = 0.4; // 基準高さ
         const targetW = targetH * aspect;
 
-        frontMat.diffuseTexture = new Texture('images/frontpage.jpg', scene);
+        frontMat.diffuseTexture = new Texture('/images/frontpage.jpg', scene);
         try { registerTexture(frontMat.diffuseTexture as Texture, 'images/frontpage.jpg'); } catch (e) { /* ignore */ }
         frontMat.emissiveTexture = frontMat.diffuseTexture;
 
@@ -520,7 +523,7 @@ function App() {
           // create spatial sound and attach to front plane
           try {
             let soundLoaded = false;
-            bgmSound = new Sound('bgm', 'sound/bgm.mp3', scene, () => {
+            bgmSound = new Sound('bgm', '/sound/bgm.mp3', scene, () => {
               try { done(); } catch (e) { /* ignore */ }
               soundLoaded = true;
               console.log('BGM loaded (Babylon Sound)');
@@ -537,10 +540,11 @@ function App() {
                 try { done(); } catch (e) { /* ignore */ }
                 try { if (bgmSound) { bgmSound.dispose(); bgmSound = null; } } catch (e) { /* ignore */ }
                 // Note: don't use registerAudioElement here as we already called done() above
-                const audioEl = new Audio('sound/bgm.mp3');
+                const audioEl = new Audio('/sound/bgm.mp3');
                 audioEl.crossOrigin = 'anonymous';
                 audioEl.loop = true;
                 audioEl.volume = 0.5;
+                bgmAudio = audioEl; // store fallback audio for toggle access 
               }
             }, 7000); // 7s fallback
           } catch (e) {
@@ -548,10 +552,11 @@ function App() {
             console.warn('BGM Sound init failed', e);
             // fallback: HTMLAudioElement (done() already called above)
             try {
-              const audioEl = new Audio('sound/bgm.mp3');
+              const audioEl = new Audio('/sound/bgm.mp3');
               audioEl.crossOrigin = 'anonymous';
               audioEl.loop = true;
               audioEl.volume = 0.5;
+              bgmAudio = audioEl; // store fallback audio for toggle access
               // Note: don't register again, done() already called
             } catch (e2) { /* ignore */ }
             bgmSound = null;
@@ -561,7 +566,7 @@ function App() {
           bgmSound = null;
         }
       };
-      frontImg.src = 'images/frontpage.jpg';
+      frontImg.src = '/images/frontpage.jpg';
 
       // profilepage: 同上（下側）
       const profileImg = new Image();
@@ -576,7 +581,7 @@ function App() {
         const targetH = 0.4;
         const targetW = targetH * aspect;
 
-        profileMat.diffuseTexture = new Texture('images/profilepage.jpg', scene);
+        profileMat.diffuseTexture = new Texture('/images/profilepage.jpg', scene);
         try { registerTexture(profileMat.diffuseTexture as Texture, 'images/profilepage.jpg'); } catch (e) { /* ignore */ }
         profileMat.emissiveTexture = profileMat.diffuseTexture;
 
@@ -589,7 +594,7 @@ function App() {
         profilePlane.freezeWorldMatrix();
         profileMat.freeze();
       };
-      profileImg.src = 'images/profilepage.jpg';
+      profileImg.src = '/images/profilepage.jpg';
 
     // --- ヘルパー: テキスト描画 ---
     const drawTextOnTexture = (texture: DynamicTexture, title: string, body: string, date: string) => {
