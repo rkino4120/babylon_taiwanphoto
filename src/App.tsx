@@ -17,7 +17,8 @@ import {
   PointerEventTypes,
   DynamicTexture,
 } from '@babylonjs/core';
-// no AudioEngineV2 used (resonance audio used instead)
+import { Sound } from '@babylonjs/core/Audio/sound';
+// AudioEngineV2 is available; Babylon Sound will be used for spatial audio
 
 // --- 型定義 ---
 interface MicroCMSImage {
@@ -77,7 +78,7 @@ function App() {
     scene.blockMaterialDirtyMechanism = true; // マテリアル変更を手動管理
     scene.skipFrustumClipping = false; // カリングは有効のまま
 
-    // (AudioEngineV2 removed; using WebAudio + ResonanceAudio for spatial sound)
+    // Using Babylon Sound (AudioEngineV2) for spatial audio
 
     // カメラ（ブラウザ表示用 - 固定位置、操作無効）
     const camera = new ArcRotateCamera(
@@ -109,9 +110,9 @@ function App() {
       const spotLight = new SpotLight(
         `spotLight${index}`,
         position,
-        new Vector3(0, -2, 0),
+        new Vector3(0, -1, 0),
         Math.PI / 3,
-        30,
+        50,
         scene
       );
       spotLight.intensity = 2.0;
@@ -124,14 +125,9 @@ function App() {
     let totalCount = 0;
     // ページスライドの非同期処理キュー（競合回避）
     let slideQueue: Promise<void> = Promise.resolve();
-    // BGM 用（resonance-audio）
-    let bgmMedia: HTMLAudioElement | null = null; // HTMLAudioElement used as media source
+    // BGM 用（Babylon Sound）
+    let bgmSound: Sound | null = null;
     let bgmPlaying = false;
-    let audioCtx: AudioContext | null = null;
-    let resonanceScene: any = null;
-    let resonanceSource: any = null;
-    let pannerNode: PannerNode | null = null; // fallback if resonance createSource not available
-    let resonanceFrontPlaneMesh: Mesh | null = null; // position target for resonance source
     // XR / VR camera handling
     let xrBaseExperience: any = null;
     let xrCamera: any = null;
@@ -144,9 +140,12 @@ function App() {
     let loadingOverlay: HTMLDivElement | null = null;
     let loadingTextDiv: HTMLDivElement | null = null;
     let loadingBarInner: HTMLDivElement | null = null;
+    // no pending list UI in production mode
     let loadingOverlayShownAt = 0;
     const loadingOverlayMinMs = 300;
     const registeredAssetKeys = new Set<string>();
+    const registeredAssetDone = new Set<string>();
+    // registeredAssetStatus/timeouts removed in production build
     const TEXT_SCALE = 2;
 
     const createLoadingOverlay = () => {
@@ -173,6 +172,7 @@ function App() {
       loadingTextDiv.style.marginBottom = '10px';
       loadingTextDiv.textContent = 'あと 100%';
       loadingOverlay.appendChild(loadingTextDiv);
+      // pending list UI removed for a cleaner UI
 
       const bar = document.createElement('div');
       bar.style.width = '60%';
@@ -193,12 +193,36 @@ function App() {
       loadingOverlayShownAt = Date.now();
     };
 
+    // Track progress for stuck detection
+    let lastLoadedAssets = 0;
+    let lastLoadedUpdateAt = Date.now();
+
     const updateLoadingOverlay = () => {
       if (!loadingTextDiv || !loadingBarInner) return;
       const percent = totalAssets === 0 ? 0 : Math.round((loadedAssets / totalAssets) * 100);
       const remaining = 100 - percent;
       loadingTextDiv.textContent = `あと ${remaining}%`; // Japanese: "remaining %"
       loadingBarInner.style.width = `${percent}%`;
+      // DEV mode: log current status
+      if (import.meta.env.DEV) {
+        console.debug(`[loading] ${loadedAssets}/${totalAssets} (${percent}%)`);
+      }
+      // no debug UI, but log stalled pending assets if stuck
+      try {
+        if (totalAssets > 0 && loadedAssets < totalAssets) {
+          if (loadedAssets !== lastLoadedAssets) {
+            lastLoadedAssets = loadedAssets;
+            lastLoadedUpdateAt = Date.now();
+          } else {
+            const elapsed = Date.now() - lastLoadedUpdateAt;
+            if (elapsed > 3000) { // 3s without progress
+              const pending = Array.from(registeredAssetKeys).filter(k => !registeredAssetDone.has(k));
+              console.warn('[loading] No progress for 3s; pending assets:', pending.slice(0, 50));
+              lastLoadedUpdateAt = Date.now(); // avoid spamming
+            }
+          }
+        }
+      } catch (e) { /* ignore */ }
       if (totalAssets > 0 && loadedAssets >= totalAssets) {
         // hide overlay after short delay
         const hideNow = () => {
@@ -225,24 +249,35 @@ function App() {
         loadedAssets = 0;
       }
 
-      // If a key is given, check for dupes within this session
-      if (key) {
-        if (registeredAssetKeys.has(key)) {
-          // no-op done function for deduped assets
-          // ensure overlay exists for visual continuity
-          createLoadingOverlay();
-          updateLoadingOverlay();
-          return () => {};
-        }
-        registeredAssetKeys.add(key);
+      // Provide a stable key if none passed
+      const k = key || `asset:${Math.random().toString(36).slice(2)}`;
+      // If already registered, no-op to avoid double count
+      if (registeredAssetKeys.has(k)) {
+        createLoadingOverlay();
+        updateLoadingOverlay();
+        return () => {};
       }
-
+      registeredAssetKeys.add(k);
       totalAssets++;
       // show overlay when first asset is registered
       createLoadingOverlay();
       updateLoadingOverlay();
+      
+      if (import.meta.env.DEV) {
+        console.debug('[registerAsset] register', k);
+      }
+      
       return () => {
         loadedAssets++;
+        registeredAssetDone.add(k);
+        // track last loaded time for stuck detection
+        lastLoadedAssets = loadedAssets;
+        lastLoadedUpdateAt = Date.now();
+        
+        if (import.meta.env.DEV) {
+          console.debug('[registerAsset] done', k);
+        }
+        
         updateLoadingOverlay();
       };
     };
@@ -276,6 +311,7 @@ function App() {
       }
     };
 
+    // registerAudioElement: helper used for HTMLAudioElement-based fallback
     const registerAudioElement = (el: HTMLAudioElement, key?: string) => {
       const k = key || el?.src || `audio:${Math.random().toString(36).slice(2)}`;
       const done = registerAsset(k);
@@ -296,104 +332,29 @@ function App() {
     };
 
     // BGM 再生/一時停止トグル
-    const initResonance = async () => {
-      if (audioCtx) return { audioCtx, resonanceScene };
-      try {
-        // 音声コンテキストの作成
-        const AudioCtor = (window as any).AudioContext || (window as any).webkitAudioContext;
-        audioCtx = new AudioCtor();
-        // dynamic import to avoid types issue
-        const mod = await import('resonance-audio');
-        console.log('[resonance] module keys:', Object.keys(mod));
-        const modAny: any = mod as any;
-        // The package may export different shapes, try to find constructor
-        let ResonanceCtor: any = null;
-        const candidates: Array<{name: string; fn: any}> = [];
-        if (typeof modAny === 'function') candidates.push({ name: 'module', fn: modAny });
-        if (modAny?.default) candidates.push({ name: 'default', fn: modAny.default });
-        if (modAny?.ResonanceAudio) candidates.push({ name: 'ResonanceAudio', fn: modAny.ResonanceAudio });
-        if (modAny?.Resonance) candidates.push({ name: 'Resonance', fn: modAny.Resonance });
-        // add other function exports (scanning keys)
-        for (const k of Object.keys(modAny || {})) {
-          const v = modAny[k];
-          if (typeof v === 'function') candidates.push({ name: k, fn: v });
-        }
-        console.log('[resonance] constructor candidates:', candidates.map(c => c.name));
-        // pick first candidate that is a function and likely matches resonance
-        for (const c of candidates) {
-          if (typeof c.fn === 'function') {
-            // prefer ones with 'resonance' in the name
-            if (/resonance/i.test(c.name)) {
-              ResonanceCtor = c.fn;
-              console.log('[resonance] picked constructor from candidate:', c.name);
-              break;
-            }
-            // otherwise tentatively use function candidate if none picked later
-            if (!ResonanceCtor) ResonanceCtor = c.fn;
-          }
-        }
-        if (typeof ResonanceCtor !== 'function') {
-          console.error('[resonance] No constructor found on module:', mod);
-          throw new Error('No Resonance constructor in module');
-        }
-        console.log('[resonance] ResonanceCtor:', ResonanceCtor && (ResonanceCtor.name || typeof ResonanceCtor));
-        resonanceScene = new (ResonanceCtor as any)(audioCtx, { ambisonicOrder: 1 });
-        // output should be an AudioNode to connect to audioCtx.destination
-        if (resonanceScene.output && typeof resonanceScene.output.connect === 'function') {
-          resonanceScene.output.connect(audioCtx!.destination);
-        } else {
-          // If the library doesn't expose an output AudioNode, don't attempt a reverse connect.
-          // We'll leave the resonance scene to route internally if needed and warn for debugging.
-          console.warn('[resonance] resonanceScene.output missing or not an AudioNode; skipping connection');
-        }
-        // set default room size and reflection/reverb tuning
-        if (typeof resonanceScene.setRoomProperties === 'function') {
-          try { resonanceScene.setRoomProperties(spatialConfig.room); console.log('[resonance] setRoomProperties', spatialConfig.room); } catch (e) { console.warn('[resonance] setRoomProperties failed', e); }
-        }
-        if (typeof resonanceScene.setRoomMaterials === 'function') {
-          try { resonanceScene.setRoomMaterials(spatialConfig.roomReflection); console.log('[resonance] setRoomMaterials', spatialConfig.roomReflection); } catch (e) { /* ignore */ }
-        }
-        if (typeof resonanceScene.setReverbProperties === 'function') {
-          try { resonanceScene.setReverbProperties(spatialConfig.reverb); console.log('[resonance] setReverbProperties', spatialConfig.reverb); } catch (e) { /* ignore */ }
-        }
-        console.log('ResonanceAudio initialized');
-        return { audioCtx, resonanceScene };
-      } catch (e) {
-        console.warn('Failed to initialize ResonanceAudio', e);
-        audioCtx = null;
-        resonanceScene = null;
-        return null;
-      }
-    };
+    // initAudioEngine(): Babylon Sound を利用するための初期化は不要（Sound が scene に依存します）
+    // initAudioEngine not required; Babylon Sound creates and manages audio context
 
     const toggleBgm = async () => {
-      if (!bgmMedia) {
+      if (!bgmSound) {
         console.log('toggleBgm: BGM not ready');
         return;
       }
-
-      try {
-        if (audioCtx && audioCtx.state === 'suspended') {
-          await audioCtx.resume();
-          console.log('AudioContext resumed');
-        }
-      } catch (e) {
-        console.warn('toggleBgm: failed to resume AudioContext', e);
-      }
+      // AudioContext resume is handled by Babylon and the browser; continue
 
       if (bgmPlaying) {
         try {
-          bgmMedia.pause();
+          bgmSound.pause();
           bgmPlaying = false;
-          console.log('BGM paused (resonance)');
+          console.log('BGM paused (Babylon Sound)');
         } catch (e) {
           console.warn('toggleBgm: pause failed', e);
         }
       } else {
         try {
-          await bgmMedia.play();
+          bgmSound.play();
           bgmPlaying = true;
-          console.log('BGM playing (resonance)');
+          console.log('BGM playing (Babylon Sound)');
         } catch (e) {
           console.warn('toggleBgm: play failed', e);
         }
@@ -512,56 +473,7 @@ function App() {
     wall2.material = wallMaterial;
     wall2.freezeWorldMatrix();
 
-    // --- GLBファイル読み込み ---
-    const loadGLB = async (filename: string, position: Vector3) => {
-      // registerAsset で読み込みをカウント（重複登録は内部で無視される）
-      const done = registerAsset ? registerAsset(`glb:${filename}`) : () => {};
-      try {
-        if (scene.isDisposed) {
-          done();
-          return;
-        }
-
-        const { SceneLoader } = await import('@babylonjs/core/Loading/sceneLoader');
-        await import('@babylonjs/loaders/glTF');
-
-        // eslint-disable-next-line deprecation/deprecation
-        const result = await SceneLoader.LoadAssetContainerAsync('', `glb/${filename}`, scene);
-
-        if (scene.isDisposed) {
-          try { result.dispose(); } catch (e) { /* ignore */ }
-          done();
-          return;
-        }
-
-        result.addAllToScene();
-
-        if (result.meshes.length > 0) {
-          const root = result.meshes[0];
-          root.position = position;
-          root.scaling = new Vector3(1, 1, 1);
-          console.log(`[GLB] ${filename} loaded successfully`);
-        } else {
-          console.warn(`[GLB] ${filename} loaded but no meshes found`);
-        }
-
-        done();
-      } catch (e: any) {
-        // シーン破棄エラーは無視（正常な動作）
-        if (e?.message?.includes('disposed')) {
-          done();
-          return;
-        }
-        console.error(`[GLB] Failed to load ${filename}:`, e);
-        done();
-      }
-    };
-
-    // plant01とplant02を読み込み
-    loadGLB('plant01.glb', new Vector3(1.5, 0, -0.7));
-    loadGLB('plant02.glb', new Vector3(-1.0, 0, -0.7));
-    loadGLB('plant02.glb', new Vector3(3, 0, 0.7));
-    loadGLB('plant04.glb', new Vector3(-3.2, 0, -0.75));
+    // GLBファイルの読み込みは無効化されています
 
 
     // BGM は frontPlane 作成後に空間化してアタッチするためここでは作成しない
@@ -612,73 +524,52 @@ function App() {
           }
         });
 
-        // BGM をロード（ResonanceAudio を使用）
+        // BGM をロード（Babylon Sound を利用）
         try {
-          await initResonance();
-          if (audioCtx && resonanceScene) {
-            // メディア要素を作成して source に接続
-            bgmMedia = new Audio('sound/bgm.mp3');
-            try { registerAudioElement(bgmMedia, 'sound/bgm.mp3'); } catch (e) { /* ignore */ }
-            bgmMedia.crossOrigin = 'anonymous';
-            bgmMedia.loop = true;
-            bgmMedia.volume = 0.5;
-            // createMediaElementSource から Resonance の source.input に接続
-            const srcNode = audioCtx.createMediaElementSource(bgmMedia);
-            if (resonanceScene && typeof resonanceScene.createSource === 'function') {
-              resonanceSource = resonanceScene.createSource();
-              srcNode.connect(resonanceSource.input);
-              // tune source if API available
-              try {
-                if (typeof resonanceSource.setGain === 'function') resonanceSource.setGain(spatialConfig.source.gain);
-                if (typeof resonanceSource.setDirectivity === 'function') resonanceSource.setDirectivity(spatialConfig.source.directivityAlpha, spatialConfig.source.directivitySharpness);
-                if (typeof resonanceSource.setDirectivityAlpha === 'function') resonanceSource.setDirectivityAlpha(spatialConfig.source.directivityAlpha);
-                if (typeof resonanceSource.setDirectivitySharpness === 'function') resonanceSource.setDirectivitySharpness(spatialConfig.source.directivitySharpness);
-                if (typeof resonanceSource.setWidth === 'function') resonanceSource.setWidth(0.5);
-                console.log('[resonance] source tune applied (gain, directivity, width)');
-              } catch (e) { /* ignore */ }
-            } else {
-              // Fallback: use WebAudio PannerNode for spatialization
-              pannerNode = audioCtx.createPanner();
-              // Panner config — tuned for basic spatialization
-              try { pannerNode.panningModel = spatialConfig.panner.panningModel as any; } catch (e) { /* ignore */ }
-              try { pannerNode.distanceModel = spatialConfig.panner.distanceModel as any; } catch (e) { /* ignore */ }
-              try { pannerNode.refDistance = spatialConfig.panner.refDistance; } catch (e) { /* ignore */ }
-              try { pannerNode.maxDistance = spatialConfig.panner.maxDistance; } catch (e) { /* ignore */ }
-              try { pannerNode.rolloffFactor = spatialConfig.panner.rolloffFactor; } catch (e) { /* ignore */ }
-              try { pannerNode.coneInnerAngle = spatialConfig.panner.coneInnerAngle; } catch (e) { /* ignore */ }
-              try { pannerNode.coneOuterAngle = spatialConfig.panner.coneOuterAngle; } catch (e) { /* ignore */ }
-              try { pannerNode.coneOuterGain = spatialConfig.panner.coneOuterGain; } catch (e) { /* ignore */ }
-              console.log('[resonance] pannerNode config applied', spatialConfig.panner);
-              srcNode.connect(pannerNode);
-              pannerNode.connect(audioCtx.destination);
-            }
-            // frontPlane の位置をソースターゲットに保持
-            resonanceFrontPlaneMesh = frontPlane;
-            // 初期位置合わせ
+          // register for loading overlay
+          const done = registerAsset('sound/bgm.mp3');
+          // create spatial sound and attach to front plane
+          try {
+            let soundLoaded = false;
+            bgmSound = new Sound('bgm', 'sound/bgm.mp3', scene, () => {
+              try { done(); } catch (e) { /* ignore */ }
+              soundLoaded = true;
+              console.log('BGM loaded (Babylon Sound)');
+            }, { loop: true, spatialSound: true, autoplay: false, volume: 0.5 });
+            // attach to mesh so it moves with it and becomes a positional source
+            try { bgmSound.attachToMesh(frontPlane); } catch (e) { /* ignore */ }
+            // attempt to tune attenuation if supported
+            try { if ((bgmSound as any).setDistanceModel) (bgmSound as any).setDistanceModel(spatialConfig.panner.distanceModel); } catch (e) { /* ignore */ }
+            try { if ((bgmSound as any).setMaxDistance) (bgmSound as any).setMaxDistance(spatialConfig.panner.maxDistance); } catch (e) { /* ignore */ }
+            // safety fallback: if Babylon sound callback doesn't fire in reasonable time, use HTMLAudioElement fallback
+            setTimeout(() => {
+              if (!soundLoaded) {
+                console.warn('BGM Sound callback not fired — using HTMLAudioElement fallback');
+                try { done(); } catch (e) { /* ignore */ }
+                try { if (bgmSound) { bgmSound.dispose(); bgmSound = null; } } catch (e) { /* ignore */ }
+                // Note: don't use registerAudioElement here as we already called done() above
+                const audioEl = new Audio('sound/bgm.mp3');
+                audioEl.crossOrigin = 'anonymous';
+                audioEl.loop = true;
+                audioEl.volume = 0.5;
+              }
+            }, 7000); // 7s fallback
+          } catch (e) {
+            try { done(); } catch (_) { /* ignore */ }
+            console.warn('BGM Sound init failed', e);
+            // fallback: HTMLAudioElement (done() already called above)
             try {
-              const pos = frontPlane.getAbsolutePosition();
-              if (resonanceSource && typeof resonanceSource.setPosition === 'function') {
-                  resonanceSource.setPosition(pos.x, pos.y, pos.z);
-                } else if (pannerNode && typeof (pannerNode as any).positionX !== 'undefined') {
-                  try { (pannerNode.positionX as any).setValueAtTime(pos.x, audioCtx.currentTime); } catch (e) { /* ignore */ }
-                  try { (pannerNode.positionY as any).setValueAtTime(pos.y, audioCtx.currentTime); } catch (e) { /* ignore */ }
-                  try { (pannerNode.positionZ as any).setValueAtTime(pos.z, audioCtx.currentTime); } catch (e) { /* ignore */ }
-                } else if (pannerNode && typeof (pannerNode as any).setPosition === 'function') {
-                  try { (pannerNode as any).setPosition(pos.x, pos.y, pos.z); } catch (e) { /* ignore */ }
-                }
-            } catch (e) { /* ignore */ }
-            if (resonanceSource) {
-              console.log('BGM loaded successfully (ResonanceAudio source)');
-            } else if (pannerNode) {
-              console.log('BGM loaded successfully (PannerNode fallback)');
-            } else {
-              console.log('BGM loaded successfully (audio element connected)');
-            }
+              const audioEl = new Audio('sound/bgm.mp3');
+              audioEl.crossOrigin = 'anonymous';
+              audioEl.loop = true;
+              audioEl.volume = 0.5;
+              // Note: don't register again, done() already called
+            } catch (e2) { /* ignore */ }
+            bgmSound = null;
           }
         } catch (e) {
-          console.warn('BGM load failed (ResonanceAudio)', e);
-          bgmMedia = null;
-          resonanceSource = null;
+          console.warn('BGM load failed (Babylon Sound)', e);
+          bgmSound = null;
         }
       };
       frontImg.src = 'images/frontpage.jpg';
@@ -1211,8 +1102,8 @@ function App() {
                 } catch (e) { /* ignore */ }
               }
             } catch (e) { /* ignore */ }
-            // Ensure the audio context resumes if required, then play
-            if (bgmMedia && !bgmPlaying) {
+            // Ensure the audio context resumes (handled by browser/Babylon), then play
+            if (bgmSound && !bgmPlaying) {
               void toggleBgm();
             }
           });
@@ -1222,9 +1113,9 @@ function App() {
 
           xr.baseExperience.sessionManager.onXRSessionEnded.add(() => {
             console.log('XR Session Ended: Stopping BGM');
-            if (bgmMedia && bgmPlaying) {
+            if (bgmSound && bgmPlaying) {
               try {
-                bgmMedia.pause();
+                bgmSound.pause();
                 bgmPlaying = false;
               } catch (e) {
                 console.warn('BGM stop failed', e);
@@ -1241,79 +1132,7 @@ function App() {
 
     // ループ
     engine.runRenderLoop(() => {
-      // Update listener + resonance source positions for spatial audio
-      try {
-          if (audioCtx && audioCtx.listener) {
-          const listener = audioCtx.listener as any;
-          const activeCamera = (isInXR && xrCamera) ? xrCamera : camera;
-          const pos = activeCamera.position;
-          let forward: Vector3;
-          try {
-            if (typeof activeCamera.getDirection === 'function') {
-              forward = activeCamera.getDirection(new Vector3(0, 0, 1));
-            } else if (typeof activeCamera.getTarget === 'function') {
-              const target = activeCamera.getTarget();
-              forward = target.subtract(pos).normalize();
-            } else {
-              forward = new Vector3(0, 0, 1);
-            }
-          } catch (e) {
-            forward = new Vector3(0, 0, 1);
-          }
-          if (listener.positionX) {
-            try {
-              (listener.positionX as any).setValueAtTime(pos.x, audioCtx.currentTime);
-              (listener.positionY as any).setValueAtTime(pos.y, audioCtx.currentTime);
-              (listener.positionZ as any).setValueAtTime(pos.z, audioCtx.currentTime);
-              (listener.forwardX as any).setValueAtTime(forward.x, audioCtx.currentTime);
-              (listener.forwardY as any).setValueAtTime(forward.y, audioCtx.currentTime);
-              (listener.forwardZ as any).setValueAtTime(forward.z, audioCtx.currentTime);
-              (listener.upX as any).setValueAtTime(activeCamera.upVector.x, audioCtx.currentTime);
-              (listener.upY as any).setValueAtTime(activeCamera.upVector.y, audioCtx.currentTime);
-              (listener.upZ as any).setValueAtTime(activeCamera.upVector.z, audioCtx.currentTime);
-            } catch (e) {
-              /* ignore */
-            }
-          } else if (typeof listener.setPosition === 'function') {
-            try { listener.setPosition(pos.x, pos.y, pos.z); } catch (e) { /* ignore */ }
-            try { listener.setOrientation(forward.x, forward.y, forward.z, activeCamera.upVector.x, activeCamera.upVector.y, activeCamera.upVector.z); } catch (e) { /* ignore */ }
-          }
-        }
-
-        if (resonanceSource && resonanceFrontPlaneMesh) {
-          try {
-            const p = resonanceFrontPlaneMesh.getAbsolutePosition();
-            if (typeof resonanceSource.setPosition === 'function') {
-              resonanceSource.setPosition(p.x, p.y, p.z);
-            }
-          } catch (e) { /* ignore */ }
-        }
-        if (pannerNode && resonanceFrontPlaneMesh && audioCtx) {
-          try {
-            const p = resonanceFrontPlaneMesh.getAbsolutePosition();
-            // position
-            if (typeof (pannerNode as any).positionX !== 'undefined') {
-              try { (pannerNode.positionX as any).setValueAtTime(p.x, audioCtx.currentTime); } catch (e) { /* ignore */ }
-              try { (pannerNode.positionY as any).setValueAtTime(p.y, audioCtx.currentTime); } catch (e) { /* ignore */ }
-              try { (pannerNode.positionZ as any).setValueAtTime(p.z, audioCtx.currentTime); } catch (e) { /* ignore */ }
-            } else if (typeof (pannerNode as any).setPosition === 'function') {
-              try { (pannerNode as any).setPosition(p.x, p.y, p.z); } catch (e) { /* ignore */ }
-            }
-            // orientation: face listener
-            const listenerPos = (isInXR && xrCamera) ? xrCamera.position : camera.position;
-            const dir = listenerPos.subtract(p).normalize();
-            if (typeof (pannerNode as any).orientationX !== 'undefined') {
-              try { (pannerNode as any).orientationX.setValueAtTime(dir.x, audioCtx.currentTime); } catch (e) { /* ignore */ }
-              try { (pannerNode as any).orientationY.setValueAtTime(dir.y, audioCtx.currentTime); } catch (e) { /* ignore */ }
-              try { (pannerNode as any).orientationZ.setValueAtTime(dir.z, audioCtx.currentTime); } catch (e) { /* ignore */ }
-            } else if (typeof (pannerNode as any).setOrientation === 'function') {
-              try { (pannerNode as any).setOrientation(dir.x, dir.y, dir.z); } catch (e) { /* ignore */ }
-            }
-          } catch (e) { /* ignore */ }
-        }
-      } catch (e) {
-        /* ignore */
-      }
+      // Listener and source position updating is handled by Babylon's Sound system
       scene.render();
     });
 
@@ -1326,27 +1145,16 @@ function App() {
     // クリーンアップ
     return () => {
       window.removeEventListener('resize', handleResize);
-      if (bgmMedia) {
-        try { bgmMedia.pause(); } catch (e) { /* ignore */ }
-        try { bgmMedia.src = ''; } catch (e) { /* ignore */ }
-        bgmMedia = null;
-      }
-      if (resonanceSource) {
-        try { if (resonanceSource.disconnect) resonanceSource.disconnect(); } catch (e) { /* ignore */ }
-        resonanceSource = null;
-      }
-      if (pannerNode) {
-        try { pannerNode.disconnect(); } catch (e) { /* ignore */ }
-        pannerNode = null;
-      }
-      if (audioCtx) {
-        try { audioCtx.close(); } catch (e) { /* ignore */ }
-        audioCtx = null;
+      if (bgmSound) {
+        try { bgmSound.pause(); } catch (e) { /* ignore */ }
+        try { bgmSound.stop(); } catch (e) { /* ignore */ }
+        try { bgmSound.dispose(); } catch (e) { /* ignore */ }
+        bgmSound = null;
       }
       if (loadingOverlay && loadingOverlay.parentElement) {
         try { loadingOverlay.parentElement.removeChild(loadingOverlay); } catch (e) { /* ignore */ }
       }
-      // AudioEngineV2 intentionally removed; resonance-audio is used for sound.
+      // Using Babylon Sound for spatial audio (AudioEngineV2)
       scene.dispose();
       engine.dispose();
     };
