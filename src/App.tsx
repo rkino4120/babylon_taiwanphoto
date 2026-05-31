@@ -472,7 +472,6 @@ function App() {
         mat.disableLighting = true;
         photoPlane.material = mat;
 
-        const frameThickness = 0.04;
         const whiteFramePlane = MeshBuilder.CreatePlane(`frame_white${index}`, { width: 1, height: 1 }, scene);
         whiteFramePlane.rotation.y = rotY;
         const whiteFrameMat = new StandardMaterial(`frameWhiteMat${index}`, scene);
@@ -535,7 +534,6 @@ function App() {
       entry.whiteFramePlane.position.set(xOffset, centerY, zPos + (0.002 * zDir));
       entry.blackFramePlane.position.set(xOffset, centerY, zPos + (0.001 * zDir));
 
-      const textW = 1.5;
       const textH = 0.6;
       const gap = 0.02;
       const textY = centerY - planeH / 2 - gap - textH / 2;
