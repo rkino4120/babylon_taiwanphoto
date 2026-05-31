@@ -368,28 +368,33 @@ function App() {
     };
     profileImg.src = 'images/profilepage.jpg';
 
-    // --- ヘルパー: テキスト描画 ---
+    // --- ヘルパー: テキスト描画 (高解像度 2048x820 向けに比率をスケール調整) ---
     const drawTextOnTexture = (texture: DynamicTexture, title: string, body: string, date: string) => {
       const ctx = texture.getContext() as unknown as CanvasRenderingContext2D;
-      const width = 1024;
-      const height = 410;
+      const width = 2048;
+      const height = 820;
 
       // クリア
       ctx.clearRect(0, 0, width, height);
 
-      // タイトル
-      ctx.font = "bold 24px 'Noto Sans JP', sans-serif";
+      // タイトル (視認性を上げるために太く大きく描画)
+      ctx.font = "bold 48px 'Noto Sans JP', sans-serif";
       ctx.fillStyle = "white";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(title, width / 2, 80);
+      ctx.fillText(title, width / 2, 120);
 
-      // 本文（簡易折り返し + <br> 対応）
-      ctx.font = "10px 'Noto Sans JP', sans-serif";
+      // 日付 (タイトルの下に寄り添うように配置)
+      ctx.font = "24px 'Noto Sans JP', sans-serif";
+      ctx.fillStyle = "#cccccc";
+      ctx.fillText(date, width / 2, 190);
+
+      // 本文 (解像度上昇に合わせライン幅や文字サイズを適切に配置)
+      ctx.font = "26px 'Noto Sans JP', sans-serif";
       ctx.fillStyle = "white";
-      const maxLineWidth = 900;
-      const lineHeight = 30;
-      let y = 150;
+      const maxLineWidth = 1800; // 横幅いっぱいに細かく折り返す
+      const lineHeight = 45;
+      let y = 270;
 
       const tempDiv = document.createElement('div');
       const withBreaks = (body || '').replace(/<br\s*\/?>/gi, '\n');
@@ -409,24 +414,19 @@ function App() {
             ctx.fillText(line, width / 2, y);
             line = chars[n];
             y += lineHeight;
-            if (y > 320) break paragraphLoop;
+            if (y > 750) break paragraphLoop; // 下限リミットに達したら打ち切り
           } else {
             line = testLine;
           }
         }
 
-        if (y <= 320) {
+        if (y <= 750) {
           ctx.fillText(line, width / 2, y);
         }
 
         y += lineHeight;
-        if (y > 320) break;
+        if (y > 750) break;
       }
-
-      // 日付
-      ctx.font = "10px 'Noto Sans JP', sans-serif";
-      ctx.fillStyle = "#cccccc";
-      ctx.fillText(date, width / 2, 220);
 
       texture.update();
     };
@@ -470,6 +470,8 @@ function App() {
         const mat = new StandardMaterial(`photoMat${index}`, scene);
         mat.backFaceCulling = false;
         mat.disableLighting = true;
+        // disableLighting = true の際、正しく発光・描画されるように発光色（emissiveColor）を白色に設定
+        mat.emissiveColor = new Color3(1, 1, 1);
         photoPlane.material = mat;
 
         const whiteFramePlane = MeshBuilder.CreatePlane(`frame_white${index}`, { width: 1, height: 1 }, scene);
@@ -491,8 +493,11 @@ function App() {
         const textPlane = MeshBuilder.CreatePlane(`text${index}`, { width: 1.5, height: 0.6 }, scene);
         textPlane.rotation.y = rotY;
 
-        const textTexture = new DynamicTexture(`textTexture${index}`, { width: 1024, height: 410 }, scene);
+        // 【高画質化の核心】解像度を 2048x820 に拡張し、ミップマップ生成と高品質トリリニアサンプリングをON
+        const textTexture = new DynamicTexture(`textTexture${index}`, { width: 2048, height: 820 }, scene, true, Texture.TRILINEAR_SAMPLINGMODE);
         textTexture.hasAlpha = true;
+        // VR内での斜め角度や視界の端におけるにじみを極限まで低減
+        textTexture.anisotropicFilteringLevel = engine.getCaps().maxAnisotropy || 16;
 
         const textMat = new StandardMaterial(`textMat${index}`, scene);
         textMat.diffuseTexture = textTexture;
@@ -546,7 +551,8 @@ function App() {
         entry.mat.diffuseTexture.dispose();
       }
       const photoTexture = new Texture(work.photo.url, scene);
-      photoTexture.level = 0.9;
+      // 暗さを解消し画像本来の色彩と詳細を再現するためにレベルを最大値(1.0)に調整
+      photoTexture.level = 1.0;
       entry.mat.diffuseTexture = photoTexture;
       entry.mat.emissiveTexture = photoTexture;
 
