@@ -84,6 +84,7 @@ function App() {
       if (audioEngine) return audioEngine;
       try {
         audioEngine = await CreateAudioEngineAsync();
+        if (scene.isDisposed) return null;
         console.log('AudioEngineV2 initialized');
         // リスナーをカメラにアタッチ（空間音に必要）
         audioEngine.listener.attach(camera);
@@ -134,11 +135,13 @@ function App() {
     });
 
     // --- 変数管理 ---
-    let photoEntries: Array<PhotoEntry | null> = [null, null, null];
+    const photoEntries: Array<PhotoEntry | null> = [null, null, null];
     let pageOffset = 0;
     let totalCount = 0;
     // ページスライドの非同期処理キュー（競合回避）
     let slideQueue: Promise<void> = Promise.resolve();
+    // スライド実行中のロックフラグ（連打ガード）
+    let isSliding = false;
     // BGM 用サウンドハンドル
     let bgm: StaticSound | null = null;
     let bgmPlaying = false;
@@ -269,112 +272,107 @@ function App() {
     wall2.material = wallMaterial;
     wall2.freezeWorldMatrix();
 
-    // BGM は frontPlane 作成後に空間化してアタッチするためここでは作成しない
+    // frontpage / profilepage を wall2 の前面に配置
+    const frontMat = new StandardMaterial('frontpageMat', scene);
+    frontMat.disableLighting = true;
+    frontMat.backFaceCulling = false;
 
-    // frontpage / profilepage を wall2 の前面に上下に配置
-    // 上: frontpage, 下: profilepage
-      const frontMat = new StandardMaterial('frontpageMat', scene);
-      frontMat.disableLighting = true;
-      frontMat.backFaceCulling = false;
+    const profileMat = new StandardMaterial('profilepageMat', scene);
+    profileMat.disableLighting = true;
+    profileMat.backFaceCulling = false;
 
-      const profileMat = new StandardMaterial('profilepageMat', scene);
-      profileMat.disableLighting = true;
-      profileMat.backFaceCulling = false;
+    // frontpage: 画像を読み込んでアスペクト比に基づきリサイズ（高さ基準）
+    const frontImg = new Image();
+    let frontLoaded = false;
+    frontImg.onload = async () => {
+      if (frontLoaded || scene.isDisposed) return;
+      frontLoaded = true;
+      const iw = frontImg.naturalWidth || 1;
+      const ih = frontImg.naturalHeight || 1;
+      const aspect = iw / ih;
+      const targetH = 0.4; // 基準高さ
+      const targetW = targetH * aspect;
 
-      // frontpage: 画像を読み込んでアスペクト比に基づきリサイズ（高さ基準）
-      const frontImg = new Image();
-      let frontLoaded = false;
-      frontImg.onload = async () => {
-        if (frontLoaded || scene.isDisposed) return;
-        frontLoaded = true;
-        const iw = frontImg.naturalWidth || 1;
-        const ih = frontImg.naturalHeight || 1;
-        const aspect = iw / ih;
-        const targetH = 0.4; // 基準高さ
-        const targetW = targetH * aspect;
+      frontMat.diffuseTexture = new Texture('images/frontpage.jpg', scene);
+      frontMat.emissiveTexture = frontMat.diffuseTexture;
 
-        frontMat.diffuseTexture = new Texture('images/frontpage.jpg', scene);
-        frontMat.emissiveTexture = frontMat.diffuseTexture;
+      const frontPlane = MeshBuilder.CreatePlane('frontpage', { width: targetW, height: targetH }, scene);
+      frontPlane.position = new Vector3(-1.2, 1.5, 0.89);
+      frontPlane.rotation.y = 0;
+      frontPlane.material = frontMat;
+      frontPlane.isPickable = true;
+      frontPlane.doNotSyncBoundingInfo = true;
+      frontPlane.freezeWorldMatrix();
+      frontMat.freeze();
 
-        const frontPlane = MeshBuilder.CreatePlane('frontpage', { width: targetW, height: targetH }, scene);
-        frontPlane.position = new Vector3(-1.2, 1.5, 0.89);
-        frontPlane.rotation.y = 0;
-        frontPlane.material = frontMat;
-        // frontPlane をクリック可能にして BGM トグルを割り当てる
-        frontPlane.isPickable = true;
-        frontPlane.doNotSyncBoundingInfo = true;
-        frontPlane.freezeWorldMatrix();
-        frontMat.freeze();
+      // ポインタ選択時に BGM トグル
+      scene.onPointerObservable.add((pi) => {
+        if (pi.type !== PointerEventTypes.POINTERUP) return;
+        const pickInfo = pi.pickInfo;
+        if (pickInfo && pickInfo.hit && pickInfo.pickedMesh === frontPlane) {
+          toggleBgm();
+        }
+      });
 
-        // ポインタ（クリック / コントローラ選択）を監視して frontPlane をクリックしたらトグル
-        scene.onPointerObservable.add((pi) => {
-          if (pi.type !== PointerEventTypes.POINTERUP) return;
-          const pickInfo = pi.pickInfo;
-          if (pickInfo && pickInfo.hit && pickInfo.pickedMesh === frontPlane) {
-            toggleBgm();
-          }
-        });
-
-        // BGM をロード（CreateSoundAsync使用、空間化有効）
-        try {
-          const engine = await initAudioEngine();
-          if (engine) {
-            bgm = await CreateSoundAsync('bgm', 'sound/bgm.mp3', {
-              loop: true,
-              volume: 0.5,
-              autoplay: false,
-              // 空間化オプション
-              spatialEnabled: true,
-              spatialDistanceModel: 'inverse',
-              spatialMinDistance: 1,
-              spatialMaxDistance: 20,
-              spatialRolloffFactor: 1,
-              spatialPanningModel: 'HRTF', // 高品質な3Dオーディオ
-            });
+      // BGM をロード
+      try {
+        const audioEng = await initAudioEngine();
+        if (audioEng && !scene.isDisposed) {
+          bgm = await CreateSoundAsync('bgm', 'sound/bgm.mp3', {
+            loop: true,
+            volume: 0.5,
+            autoplay: false,
+            spatialEnabled: true,
+            spatialDistanceModel: 'inverse',
+            spatialMinDistance: 1,
+            spatialMaxDistance: 20,
+            spatialRolloffFactor: 1,
+            spatialPanningModel: 'HRTF',
+          });
+          if (!scene.isDisposed && bgm) {
             console.log('BGM loaded successfully');
-            // BGMの位置をfrontPlaneにアタッチ
             bgm.spatial.attach(frontPlane);
             console.log('BGM spatial audio attached to frontPlane');
           }
-        } catch (e) {
-          console.warn('BGM load failed', e);
-          bgm = null;
         }
-      };
-      frontImg.src = 'images/frontpage.jpg';
+      } catch (e) {
+        console.warn('BGM load failed', e);
+        bgm = null;
+      }
+    };
+    frontImg.src = 'images/frontpage.jpg';
 
-      // profilepage: 同上（下側）
-      const profileImg = new Image();
-      let profileLoaded = false;
-      profileImg.onload = () => {
-        if (profileLoaded || scene.isDisposed) return;
-        profileLoaded = true;
-        const iw = profileImg.naturalWidth || 1;
-        const ih = profileImg.naturalHeight || 1;
-        const aspect = iw / ih;
-        const targetH = 0.4;
-        const targetW = targetH * aspect;
+    // profilepage
+    const profileImg = new Image();
+    let profileLoaded = false;
+    profileImg.onload = () => {
+      if (profileLoaded || scene.isDisposed) return;
+      profileLoaded = true;
+      const iw = profileImg.naturalWidth || 1;
+      const ih = profileImg.naturalHeight || 1;
+      const aspect = iw / ih;
+      const targetH = 0.4;
+      const targetW = targetH * aspect;
 
-        profileMat.diffuseTexture = new Texture('images/profilepage.jpg', scene);
-        profileMat.emissiveTexture = profileMat.diffuseTexture;
+      profileMat.diffuseTexture = new Texture('images/profilepage.jpg', scene);
+      profileMat.emissiveTexture = profileMat.diffuseTexture;
 
-        const profilePlane = MeshBuilder.CreatePlane('profilepage', { width: targetW, height: targetH }, scene);
-        profilePlane.position = new Vector3(-0.8, 1.5, 0.89);
-        profilePlane.rotation.y = 0;
-        profilePlane.material = profileMat;
-        profilePlane.isPickable = false;
-        profilePlane.doNotSyncBoundingInfo = true;
-        profilePlane.freezeWorldMatrix();
-        profileMat.freeze();
-      };
-      profileImg.src = 'images/profilepage.jpg';
+      const profilePlane = MeshBuilder.CreatePlane('profilepage', { width: targetW, height: targetH }, scene);
+      profilePlane.position = new Vector3(-0.8, 1.5, 0.89);
+      profilePlane.rotation.y = 0;
+      profilePlane.material = profileMat;
+      profilePlane.isPickable = false;
+      profilePlane.doNotSyncBoundingInfo = true;
+      profilePlane.freezeWorldMatrix();
+      profileMat.freeze();
+    };
+    profileImg.src = 'images/profilepage.jpg';
 
     // --- ヘルパー: テキスト描画 ---
     const drawTextOnTexture = (texture: DynamicTexture, title: string, body: string, date: string) => {
-      // 型エラー回避のため、標準の CanvasRenderingContext2D にキャストします
       const ctx = texture.getContext() as unknown as CanvasRenderingContext2D;
       const width = 1024;
-      const height = 410; // テクスチャサイズ
+      const height = 410;
 
       // クリア
       ctx.clearRect(0, 0, width, height);
@@ -393,13 +391,11 @@ function App() {
       const lineHeight = 30;
       let y = 150;
 
-      // HTML 内の <br> を改行に変換してからテキストを取り出す
       const tempDiv = document.createElement('div');
       const withBreaks = (body || '').replace(/<br\s*\/?>/gi, '\n');
       tempDiv.innerHTML = withBreaks;
       const bodyText = tempDiv.textContent || tempDiv.innerText || '';
 
-      // 段落ごとに分割して、文字単位で折り返す（日本語向けの簡易処理）
       const paragraphs = bodyText.split(/\r?\n/);
       paragraphLoop: for (let p = 0; p < paragraphs.length; p++) {
         const para = paragraphs[p] || '';
@@ -413,23 +409,21 @@ function App() {
             ctx.fillText(line, width / 2, y);
             line = chars[n];
             y += lineHeight;
-            if (y > 320) break paragraphLoop; // テクスチャ高さを超えたら終了
+            if (y > 320) break paragraphLoop;
           } else {
             line = testLine;
           }
         }
 
-        // 残りの行を描画
         if (y <= 320) {
           ctx.fillText(line, width / 2, y);
         }
 
-        // 段落間の余白
         y += lineHeight;
         if (y > 320) break;
       }
 
-      // 日付（少し上に表示）
+      // 日付
       ctx.font = "10px 'Noto Sans JP', sans-serif";
       ctx.fillStyle = "#cccccc";
       ctx.fillText(date, width / 2, 220);
@@ -437,22 +431,9 @@ function App() {
       texture.update();
     };
 
-    // --- 写真作成ロジック ---
+    // --- 写真作成・更新ロジック (オブジェクトプーリング適用) ---
     const createOrUpdateEntry = (work: WorkItem, index: number) => {
       if (scene.isDisposed) return;
-
-      // 古いエントリがある場合は破棄して再作成する
-      if (photoEntries[index]) {
-        const old = photoEntries[index]!;
-        old.photoPlane.dispose();
-        old.whiteFramePlane.dispose();
-        old.blackFramePlane.dispose();
-        old.textPlane.dispose();
-        old.mat.dispose();
-        old.textTexture.dispose();
-        old.textMat.dispose();
-        photoEntries[index] = null;
-      }
 
       const imgW = work.photo?.width || 1;
       const imgH = work.photo?.height || 1;
@@ -461,58 +442,38 @@ function App() {
       let planeW: number;
       let planeH: number;
       
-      // 最大サイズに合わせて調整
       if (aspect < 1) {
-        // 縦長
-        planeW = 1;
-        planeH = planeW / aspect;
+        planeW = 0.5;
+        planeH = 0.5 / aspect;
       } else {
-        // 横長
-        planeH = 1;
-        planeW = planeH * aspect;
+        planeH = 0.5;
+        planeW = 0.5 * aspect;
       }
-
-      // 写真とフレームを半分のサイズにする
-      planeW = planeW * 0.5;
-      planeH = planeH * 0.5;
 
       const baseBottom = 1.5;
       const centerY = baseBottom + planeH / 2;
-      // 配置ロジック: index 0,1 は壁1(奥)、index 2 は壁2(手前)
-      // spacing を小さくして 2 枚並んでいる写真の間隔を狭める
-      const spacing = 1.25; // 以前は 2.5
-      const wallFrontZ = 0.89; // 3枚目（前面）のデフォルトを少し手前に調整
+      const spacing = 1.25;
+      const wallFrontZ = 0.89;
       const xOffset = index < 2 ? (index - 0.5) * spacing : 0.5;
       const zPos = index < 2 ? -0.89 : wallFrontZ;
       const rotY = index < 2 ? Math.PI : 0;
+      const zDir = index < 2 ? -1 : 1;
 
-      // rotY は既に上で定義済み
+      let entry = photoEntries[index];
 
-      // 新規作成
-      if (!photoEntries[index]) {
-        const photoPlane = MeshBuilder.CreatePlane(`photo${index}`, { width: planeW, height: planeH }, scene);
-        photoPlane.position = new Vector3(xOffset, centerY, zPos);
+      // 初回のみ3Dメッシュ構造体を生成（それ以外は既存リソースを使い回す）
+      if (!entry) {
+        // メッシュはスケーリングをかけるためデフォルトサイズ 1x1 で生成
+        const photoPlane = MeshBuilder.CreatePlane(`photo${index}`, { width: 1, height: 1 }, scene);
         photoPlane.rotation.y = rotY;
 
         const mat = new StandardMaterial(`photoMat${index}`, scene);
         mat.backFaceCulling = false;
         mat.disableLighting = true;
-        mat.emissiveColor = new Color3(1, 1, 1);
-        mat.diffuseTexture = new Texture(work.photo.url, scene);
-        mat.emissiveTexture = mat.diffuseTexture;
-        
-        // コントラスト調整: 高すぎるコントラストを緩和
-        mat.diffuseTexture!.level = 0.9; // 明るさを少し落とす
-        mat.emissiveTexture!.level = 0.85; // エミッシブも同様に
-        
         photoPlane.material = mat;
 
-        // White frame
-        const frameThickness = 0.04; // 以前の 0.08 の半分
-        const whiteFramePlane = MeshBuilder.CreatePlane(`frame_white${index}`, { width: planeW + frameThickness * 2, height: planeH + frameThickness * 2 }, scene);
-          const zDir = index < 2 ? -1 : 1; 
-          const whitezPos = zPos + (0.002 * zDir); 
-        whiteFramePlane.position = new Vector3(xOffset, centerY, whitezPos);
+        const frameThickness = 0.04;
+        const whiteFramePlane = MeshBuilder.CreatePlane(`frame_white${index}`, { width: 1, height: 1 }, scene);
         whiteFramePlane.rotation.y = rotY;
         const whiteFrameMat = new StandardMaterial(`frameWhiteMat${index}`, scene);
         whiteFrameMat.disableLighting = true;
@@ -520,11 +481,7 @@ function App() {
         whiteFrameMat.freeze();
         whiteFramePlane.material = whiteFrameMat;
 
-        // Black frame
-        const blackFrameThickness = 0.02; // 以前の 0.04 の半分
-        const blackFramePlane = MeshBuilder.CreatePlane(`frame_black${index}`, { width: planeW + blackFrameThickness * 2, height: planeH + blackFrameThickness * 2 }, scene);
-        const blackzPos = zPos + (0.001 * zDir);
-        blackFramePlane.position = new Vector3(xOffset, centerY, blackzPos);
+        const blackFramePlane = MeshBuilder.CreatePlane(`frame_black${index}`, { width: 1, height: 1 }, scene);
         blackFramePlane.rotation.y = rotY;
         const blackFrameMat = new StandardMaterial(`frameBlackMat${index}`, scene);
         blackFrameMat.disableLighting = true;
@@ -532,19 +489,9 @@ function App() {
         blackFrameMat.freeze();
         blackFramePlane.material = blackFrameMat;
 
-        // Text Plane
-        const textW = 1.5;
-        const textH = 0.6;
-        const textPlane = MeshBuilder.CreatePlane(`text${index}`, { width: textW, height: textH }, scene);
-        const gap = 0.02; // 画像に近づける
-        const textY = centerY - planeH / 2 - gap - textH / 2; // 画像の下に配置
-        // テキストを写真に少し近づける（ビューア側へ）
-        const textOffset = 0.005;
-        const textzPos = zPos - (textOffset * (index < 2 ? -1 : 1));
-        textPlane.position = new Vector3(xOffset, textY, textzPos);
+        const textPlane = MeshBuilder.CreatePlane(`text${index}`, { width: 1.5, height: 0.6 }, scene);
         textPlane.rotation.y = rotY;
 
-        // DynamicTextureでテキストを作成 (1024x410)
         const textTexture = new DynamicTexture(`textTexture${index}`, { width: 1024, height: 410 }, scene);
         textTexture.hasAlpha = true;
 
@@ -555,24 +502,8 @@ function App() {
         textMat.disableLighting = true;
         textMat.backFaceCulling = false;
         textPlane.material = textMat;
-        
-        // テキスト内容の準備
-        const titleText = work.title || '';
-        const rawBodyHtml = work.body || '';
-        const temp = document.createElement('div');
-        temp.innerHTML = rawBodyHtml;
-        let fDate = '';
-        if (work.shootingdate) {
-          const d = new Date(work.shootingdate);
-          fDate = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
-        }
 
-        // 描画実行
-        // drawTextOnTexture 側で <br> を改行に変換するので、元の HTML を渡す
-        drawTextOnTexture(textTexture, titleText, rawBodyHtml, fDate);
-        textMat.freeze();
-
-        photoEntries[index] = {
+        entry = {
           photoPlane,
           mat,
           whiteFramePlane,
@@ -582,7 +513,56 @@ function App() {
           textTexture,
           originalZ: zPos,
         };
+        photoEntries[index] = entry;
       }
+
+      // 非表示化されていた場合に有効に戻す
+      entry.photoPlane.setEnabled(true);
+      entry.whiteFramePlane.setEnabled(true);
+      entry.blackFramePlane.setEnabled(true);
+      entry.textPlane.setEnabled(true);
+
+      // アスペクト比に基づくスケーリング調整 (CPU/GPU負荷が低い方法)
+      const frameThickness = 0.04;
+      const blackFrameThickness = 0.02;
+
+      entry.photoPlane.scaling.set(planeW, planeH, 1);
+      entry.whiteFramePlane.scaling.set(planeW + frameThickness * 2, planeH + frameThickness * 2, 1);
+      entry.blackFramePlane.scaling.set(planeW + blackFrameThickness * 2, planeH + blackFrameThickness * 2, 1);
+
+      // 位置を適用
+      entry.photoPlane.position.set(xOffset, centerY, zPos);
+      entry.whiteFramePlane.position.set(xOffset, centerY, zPos + (0.002 * zDir));
+      entry.blackFramePlane.position.set(xOffset, centerY, zPos + (0.001 * zDir));
+
+      const textW = 1.5;
+      const textH = 0.6;
+      const gap = 0.02;
+      const textY = centerY - planeH / 2 - gap - textH / 2;
+      const textOffset = 0.005;
+      const textzPos = zPos - (textOffset * zDir);
+      entry.textPlane.position.set(xOffset, textY, textzPos);
+
+      // 既存の古い写真テクスチャを処分してメモリリークを防ぎ、新規割り当て
+      if (entry.mat.diffuseTexture) {
+        entry.mat.diffuseTexture.dispose();
+      }
+      const photoTexture = new Texture(work.photo.url, scene);
+      photoTexture.level = 0.9;
+      entry.mat.diffuseTexture = photoTexture;
+      entry.mat.emissiveTexture = photoTexture;
+
+      // 日付フォーマット
+      let fDate = '';
+      if (work.shootingdate) {
+        const d = new Date(work.shootingdate);
+        fDate = `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
+      }
+
+      // テキスト内容を書き換える
+      entry.textMat.unfreeze();
+      drawTextOnTexture(entry.textTexture, work.title || '', work.body || '', fDate);
+      entry.textMat.freeze();
     };
 
     const hideEntry = (index: number) => {
@@ -593,25 +573,25 @@ function App() {
         entry.blackFramePlane.setEnabled(false);
         entry.textPlane.setEnabled(false);
       }
-    }
+    };
 
     // --- データ取得 ---
     const loadPhotos = async (offset = 0) => {
       try {
         const apiKey = import.meta.env.VITE_MICROCMS_API_KEY;
-        if (!apiKey) {
+        const isDev = import.meta.env.DEV;
+
+        // 本番ではNetlify Functions経由。開発時のみ、かつAPIキーが存在する場合に直叩きを許容
+        if (isDev && !apiKey) {
           console.error('API Key not found. Please set VITE_MICROCMS_API_KEY in .env.local');
           return;
         }
 
-        // 開発環境: 直接API呼び出し
-        // 本番環境(Netlify): Netlify Functions経由
-        const isDev = import.meta.env.DEV;
         const url = isDev
           ? `https://liangworks.microcms.io/api/v1/taiwanphoto?limit=3&offset=${offset}`
           : `/.netlify/functions/microcms?limit=3&offset=${offset}`;
         
-        console.log(`[loadPhotos] Fetching from ${isDev ? 'MicroCMS (dev)' : 'Netlify Functions (prod)'}: ${url}`);
+        console.log(`[loadPhotos] Fetching: ${url}`);
         
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000); // 10秒タイムアウト
@@ -621,19 +601,16 @@ function App() {
             signal: controller.signal,
           };
           
-          // 開発環境のみAPIキーをヘッダーに付与
-          if (isDev) {
+          if (isDev && apiKey) {
             fetchOptions.headers = { 'X-MICROCMS-API-KEY': apiKey };
           }
           
           const res = await fetch(url, fetchOptions);
           clearTimeout(timeoutId);
           
-          console.log(`[loadPhotos] API response status: ${res.status}`);
-          
           if (!res.ok) {
             const errorText = await res.text().catch(() => 'No response text');
-            throw new Error(`API Error: ${res.status} ${res.statusText} - ${errorText}`);
+            throw new Error(`API Error: ${res.status} - ${errorText}`);
           }
           
           if (scene.isDisposed) return;
@@ -653,19 +630,10 @@ function App() {
           console.log(`[loadPhotos] Success: offset=${offset}, count=${items.length}, total=${totalCount}`);
         } catch (fetchError) {
           clearTimeout(timeoutId);
-          if (fetchError instanceof Error) {
-            if (fetchError.name === 'AbortError') {
-              console.error('[loadPhotos] API request timeout (10s)');
-            } else {
-              console.error('[loadPhotos] API fetch error:', fetchError.message);
-              console.error('[loadPhotos] Stack:', fetchError.stack);
-            }
-          } else {
-            console.error('[loadPhotos] API fetch error:', fetchError);
-          }
+          console.error('[loadPhotos] Fetch execution error:', fetchError);
         }
       } catch (e) {
-        console.error('[loadPhotos] Error:', e);
+        console.error('[loadPhotos] Core error:', e);
       }
     };
     
@@ -696,23 +664,27 @@ function App() {
     };
 
     const pageSlide = async (direction: 1 | -1) => {
+      // ロック中、もしくは破棄済みはガード
+      if (isSliding || scene.isDisposed) return;
+      isSliding = true;
+
       // キューに追加して前の処理完了後に実行
       slideQueue = slideQueue.then(async () => {
         return new Promise<void>(async (resolve) => {
           try {
+            if (scene.isDisposed) {
+              resolve();
+              return;
+            }
+
             // 1. animate out
             const outPromises: Promise<void>[] = [];
             photoEntries.forEach((e, i) => {
               if (!e || !e.photoPlane.isEnabled()) return;
               
-              let targetZ: number;
-              if (i < 2) {
-                  targetZ = -1.5; // Wall 1
-              } else {
-                  targetZ = 1.5; // Wall 2
-              }
-
+              const targetZ = i < 2 ? -1.5 : 1.5;
               const delta = targetZ - e.originalZ;
+              
               outPromises.push(animateMeshZ(e.photoPlane, e.photoPlane.position.z, targetZ));
               outPromises.push(animateMeshZ(e.whiteFramePlane, e.whiteFramePlane.position.z, e.whiteFramePlane.position.z + delta));
               outPromises.push(animateMeshZ(e.blackFramePlane, e.blackFramePlane.position.z, e.blackFramePlane.position.z + delta));
@@ -720,6 +692,10 @@ function App() {
             });
 
             await Promise.all(outPromises);
+            if (scene.isDisposed) {
+              resolve();
+              return;
+            }
 
             // 2. データ更新
             let nextOffset = pageOffset + 3 * direction;
@@ -731,24 +707,21 @@ function App() {
             }
             
             await loadPhotos(nextOffset);
+            if (scene.isDisposed) {
+              resolve();
+              return;
+            }
 
             // 3. animate in
             const inPromises: Promise<void>[] = [];
             photoEntries.forEach((e, i) => {
               if (!e || !e.photoPlane.isEnabled()) return;
               
-              let hiddenZ: number;
-              if (i < 2) {
-                  hiddenZ = -1.5;
-              } else {
-                  hiddenZ = 1.5;
-              }
+              const hiddenZ = i < 2 ? -1.5 : 1.5;
               const zDir = i < 2 ? -1 : 1; 
               
-              // アニメーション: hidden -> original
               inPromises.push(animateMeshZ(e.photoPlane, hiddenZ, e.originalZ));
               
-              // フレームなどの相対位置
               const whiteTarget = e.originalZ + (0.002 * zDir);
               const whiteHidden = hiddenZ + (0.002 * zDir);
               inPromises.push(animateMeshZ(e.whiteFramePlane, whiteHidden, whiteTarget));
@@ -757,7 +730,6 @@ function App() {
               const blackHidden = hiddenZ + (0.001 * zDir);
               inPromises.push(animateMeshZ(e.blackFramePlane, blackHidden, blackTarget));
               
-              // テキスト: 隠れ位置/目標位置を写真と同じようにオフセットして扱う
               const textOffset = 0.01;
               const hiddenTextZ = hiddenZ - (textOffset * zDir);
               const targetTextZ = e.originalZ - (textOffset * zDir);
@@ -772,6 +744,10 @@ function App() {
           }
         });
       });
+
+      // スライド完了後にロック解除
+      await slideQueue;
+      isSliding = false;
     };
 
     // 初期ロード
@@ -798,18 +774,17 @@ function App() {
             sessionMode: 'immersive-vr',
           },
         });
+        
+        // 非同期完了時にコンポーネントが破棄されていたら安全にリターン
+        if (scene.isDisposed) return;
         xrExperience = xr;
         
         if (xr.baseExperience) {
-          // 確実に壁の間の中央に配置する
           xr.baseExperience.camera.position = new Vector3(0, 1.6, 0);
 
-          // セッション開始/終了で BGM を制御
           xr.baseExperience.sessionManager.onXRSessionInit.add(() => {
             console.log('XR Session Init: Starting BGM');
             isInXR = true;
-            console.log('Audio listener position:', audioEngine?.listener.position);
-            console.log('Audio listener attached:', audioEngine?.listener.isAttached);
             if (bgm && !bgmPlaying) {
               try {
                 bgm.play();
@@ -840,7 +815,7 @@ function App() {
     };
     createXR();
 
-    // Clamp XR movement to bounds each frame
+    // Clamp XR movement each frame
     scene.onBeforeRenderObservable.add(() => {
       try {
         if (!isInXR || !xrExperience || !xrExperience.baseExperience) return;
@@ -851,10 +826,7 @@ function App() {
         const pos = rigParent.position;
         const clamped = clampXRPosition(pos);
         if (clamped.x !== pos.x || clamped.z !== pos.z) {
-          const prevX = pos.x; const prevZ = pos.z;
-          // Apply clamped X/Z; leave Y untouched
           try { rigParent.position.x = clamped.x; rigParent.position.z = clamped.z; } catch (e) { /* ignore */ }
-          try { console.log('[XR] clamped rigParent position from', prevX, prevZ, 'to', clamped.x, clamped.z); } catch (e) { /* ignore */ }
         }
       } catch (e) { /* ignore */ }
     });
@@ -880,6 +852,16 @@ function App() {
       if (audioEngine) {
         try { audioEngine.dispose(); } catch (e) { /* ignore */ }
       }
+      
+      // プーリングで使用した残りのリソース解放
+      photoEntries.forEach(entry => {
+        if (entry) {
+          if (entry.mat.diffuseTexture) entry.mat.diffuseTexture.dispose();
+          entry.textTexture.dispose();
+          entry.textMat.dispose();
+        }
+      });
+
       scene.dispose();
       engine.dispose();
     };
